@@ -985,10 +985,18 @@ def convert_to_kepub(epub_path: str) -> str:
     kepub 在每個句子外包 <span class="koboSpan">，這是 Kobo 跨頁畫重點、
     閱讀統計、書籤精準度等功能仰賴的標記。沒有 kepubify 就回傳原 epub。
     """
+    # 找 kepubify。launchd / systemd 啟動的 process PATH 通常不含 /opt/homebrew/bin
+    # 與 /usr/local/bin，這裡多搜幾個常見位置避免靜默失敗
     kepubify = shutil.which("kepubify")
     if not kepubify:
-        print("⚠️  找不到 kepubify，跳過轉檔（建議：brew install kepubify）")
-        return epub_path
+        for candidate in ("/opt/homebrew/bin/kepubify", "/usr/local/bin/kepubify", "/usr/bin/kepubify"):
+            if Path(candidate).exists():
+                kepubify = candidate
+                break
+    if not kepubify:
+        raise RuntimeError(
+            "❌ 找不到 kepubify，無法產生 Kobo 原生格式（建議：brew install kepubify / apt install kepubify）"
+        )
 
     src = Path(epub_path)
     out_dir = src.parent
@@ -998,14 +1006,12 @@ def convert_to_kepub(epub_path: str) -> str:
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        print(f"⚠️  kepubify 失敗，改用原 epub: {proc.stderr.strip()[-200:]}")
-        return epub_path
+        raise RuntimeError(f"❌ kepubify 失敗（rc={proc.returncode}）: {proc.stderr.strip()[-200:]}")
 
     # 找出 kepubify 產出的檔案，重新命名為更乾淨的 <原檔名>.kepub.epub
     converted = out_dir / f"{src.stem}_converted.kepub.epub"
     if not converted.exists():
-        print(f"⚠️  kepubify 沒輸出預期檔案，改用原 epub")
-        return epub_path
+        raise RuntimeError(f"❌ kepubify 沒輸出預期檔案：{converted.name}")
 
     final = out_dir / f"{src.stem}.kepub.epub"
     converted.replace(final)
@@ -1188,11 +1194,23 @@ def main():
     build_epub(segments, chapters, meta, epub_path, render_timestamps=args.keep_timestamps)
 
     # Step 4.5: 轉 Kobo 私有的 kepub 格式（跨頁畫重點等功能仰賴此格式）
-    kobo_path = convert_to_kepub(epub_path)
+    # 失敗就直接結束 — 不要悄悄上傳純 epub，那會在 Kobo 上出現巨大字體
+    try:
+        kobo_path = convert_to_kepub(epub_path)
+    except RuntimeError as e:
+        print(str(e))
+        print("⛔ 中止：未產生 .kepub.epub，不會上傳到 Kobo（避免字體變形）")
+        sys.exit(2)
 
     # Step 5: Kobo
     if not args.no_kobo:
-        copy_to_kobo(kobo_path)
+        if copy_to_kobo(kobo_path):
+            # 同步成功後清掉本地 epub / kepub，只留 _data.json 當翻譯快取（可用 --from-json 重建）
+            for p in (epub_path, kobo_path):
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except OSError as e:
+                    print(f"⚠️  清理本地檔案失敗 {p}: {e}")
 
     print()
     print("=" * 50)
