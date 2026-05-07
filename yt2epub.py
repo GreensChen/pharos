@@ -454,9 +454,57 @@ def llm_call(system_prompt: str, user_prompt: str, max_tokens: int, *,
 # Step 2: 翻譯
 # ─────────────────────────────────────────────
 
+GLOSSARY_PATH = Path(__file__).parent / "glossary.json"
+
+
+def _load_glossary() -> tuple[list, list]:
+    """讀 glossary.json，回傳 ([(compiled_regex, replacement)...], [canonical_terms])。
+
+    這個檔不存在或解析失敗時回傳空，不影響翻譯流程。
+    """
+    if not GLOSSARY_PATH.exists():
+        return [], []
+    try:
+        data = json.loads(GLOSSARY_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"⚠️  glossary.json 解析失敗：{e}（略過）")
+        return [], []
+    rules_dict = data.get("rules", {})
+    compiled = [(re.compile(p), r) for p, r in rules_dict.items()]
+    canonical = sorted({r for _, r in compiled})
+    return compiled, canonical
+
+
+def _apply_glossary(text: str, compiled_rules) -> str:
+    for pat, repl in compiled_rules:
+        text = pat.sub(repl, text)
+    return text
+
+
 def translate_segments(segments: list[dict], batch_size: int = 10) -> list[dict]:
     """批次翻譯成繁體中文（依 LLM_PROVIDER 用 Gemini 或 Claude）。"""
     print(f"🌐 正在翻譯成繁體中文（{LLM_PROVIDER}）...")
+
+    glossary_rules, canonical_terms = _load_glossary()
+    if glossary_rules:
+        # 翻譯前先把字幕辨識錯的專有名詞修對，避免 LLM 再 hallucinate 翻譯
+        fixed = 0
+        for seg in segments:
+            new_en = _apply_glossary(seg.get("en", ""), glossary_rules)
+            if new_en != seg.get("en"):
+                fixed += 1
+            seg["en"] = new_en
+        print(f"   📓 套用 glossary：{len(glossary_rules)} 條規則、修正 {fixed} 段 EN")
+
+    # 同時把規範詞注入 system prompt，要求 LLM 原樣保留（防止再被誤譯）
+    system_prompt = TRANSLATION_SYSTEM_PROMPT
+    if canonical_terms:
+        terms_block = "\n".join(f"   - {t}" for t in canonical_terms)
+        system_prompt = (
+            TRANSLATION_SYSTEM_PROMPT
+            + "\n\n8. 以下專有名詞請原樣保留（連空格、大小寫都不要改），不要翻譯也不要重寫拼法：\n"
+            + terms_block
+        )
 
     translated = []
     total_batches = (len(segments) + batch_size - 1) // batch_size
@@ -477,7 +525,7 @@ def translate_segments(segments: list[dict], batch_size: int = 10) -> list[dict]
 
         # max_tokens 給足空間（thinking + 輸出）
         response_text = llm_call(
-            TRANSLATION_SYSTEM_PROMPT, prompt,
+            system_prompt, prompt,
             max_tokens=8192,
             thinking_budget=GEMINI_THINKING_TRANSLATE,
         )
