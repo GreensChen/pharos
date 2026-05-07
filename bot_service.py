@@ -22,7 +22,7 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -264,6 +264,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await cb_unsub(query, payload)
         elif action == "menu":
             await cb_menu(query, payload)
+        elif action == "rev":
+            await cb_review(query, payload)
         else:
             await query.answer(f"未知動作: {action}")
     except Exception as e:
@@ -749,6 +751,279 @@ async def cmd_unsub(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────
+# Kobo highlights review（/review + 22:00 daily digest）
+# ─────────────────────────────────────────────
+
+# Per-chat review state（單 user 場景但用 chat_id 做 key 較通用）
+_review_state: dict[int, dict] = {}
+
+DAILY_REVIEW_DIGEST_HOUR = int(os.environ.get("DAILY_REVIEW_DIGEST_HOUR", "22"))
+
+
+async def _push_review_card(chat_id: int, bot):
+    """推下一張 highlight 卡片，或結束 batch。"""
+    state = _review_state.get(chat_id)
+    if not state:
+        return
+    if state["idx"] >= len(state["pending"]):
+        # 結束
+        total = len(state["pending"])
+        del _review_state[chat_id]
+        await bot.send_message(
+            chat_id, f"✅ 本輪 review 完成（{total} 條）。"
+        )
+        return
+
+    h = state["pending"][state["idx"]]
+    total = len(state["pending"])
+    text_lines = [
+        f"📖 <b>{html_escape(h.book_title)}</b>",
+    ]
+    if h.author:
+        text_lines.append(f"👤 {html_escape(h.author)}")
+    text_lines.append(f"🕒 {h.timestamp}  ({state['idx']+1}/{total})")
+    text_lines.append("")
+    # 用 blockquote 呈現原 highlight
+    text_lines.append(f"<blockquote>{html_escape(h.text)}</blockquote>")
+    if h.note:
+        text_lines.append(f"\n📝 原筆記：{html_escape(h.note)}")
+    text_lines.append("\n💭 你的反應？（直接打字，或用按鈕）")
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⏭ 跳過", callback_data="rev:skip"),
+            InlineKeyboardButton("⏸ 全部之後", callback_data="rev:pause"),
+        ],
+    ])
+    msg = await bot.send_message(
+        chat_id,
+        "\n".join(text_lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb,
+    )
+    state["current_msg_id"] = msg.message_id
+    state["awaiting_text"] = True
+
+
+async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/review — 啟動一輪 review。"""
+    chat_id = update.effective_chat.id
+    if chat_id in _review_state:
+        await update.message.reply_text(
+            "⚠️ 你正在 review 中。打 /pausereview 暫停或繼續處理當前卡片。"
+        )
+        return
+
+    await update.message.reply_text("🔍 從 Dropbox 抓 highlights...")
+    try:
+        from kobo_highlights_reader import list_pending_highlights
+        pending = await asyncio.to_thread(list_pending_highlights)
+    except Exception as e:
+        logger.exception("list_pending_highlights 失敗")
+        await update.message.reply_text(f"❌ 讀取失敗：{e}")
+        return
+
+    if not pending:
+        await update.message.reply_text("📭 沒有新的 highlights。慢慢來。")
+        return
+
+    _review_state[chat_id] = {
+        "pending": pending,
+        "idx": 0,
+        "awaiting_text": False,
+        "current_msg_id": None,
+    }
+    book_count = len({h.book_filename for h in pending})
+    await update.message.reply_html(
+        f"📚 <b>{len(pending)}</b> 條 highlights、跨 <b>{book_count}</b> 本書。\n一條一條來。"
+    )
+    await _push_review_card(chat_id, context.bot)
+
+
+async def cmd_pausereview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/pausereview — 暫停當前 review。state 保留，下次 /review 從頭抓。"""
+    chat_id = update.effective_chat.id
+    if chat_id not in _review_state:
+        await update.message.reply_text("（沒在 review 中）")
+        return
+    del _review_state[chat_id]
+    await update.message.reply_text("⏸ 已暫停。隨時打 /review 重啟（從新的 pending 開始）。")
+
+
+async def cmd_skipall(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/skipall — 把所有 pending highlights 標記為 already-processed（不寫 inbox）。
+    用途：第一次接 bot 時清空歷史，之後 /review 只看新增的。"""
+    await update.message.reply_text("🧹 抓 pending 列表...")
+    try:
+        from kobo_highlights_reader import list_pending_highlights, mark_processed
+        pending = await asyncio.to_thread(list_pending_highlights)
+    except Exception as e:
+        logger.exception("list_pending_highlights 失敗")
+        await update.message.reply_text(f"❌ 失敗：{e}")
+        return
+
+    if not pending:
+        await update.message.reply_text("📭 已經沒有 pending highlights")
+        return
+
+    # 對每本書找最新 timestamp 寫進 state
+    by_book: dict[str, str] = {}
+    for h in pending:
+        prev = by_book.get(h.book_filename, "")
+        if h.timestamp > prev:
+            by_book[h.book_filename] = h.timestamp
+
+    for book, ts in by_book.items():
+        await asyncio.to_thread(mark_processed, book, ts)
+
+    await update.message.reply_html(
+        f"✅ 已標記 <b>{len(pending)}</b> 條 highlights 為 processed"
+        f"（<b>{len(by_book)}</b> 本書）。\n"
+        f"下次 /review 只看之後新畫的。"
+    )
+
+
+async def cb_review(query, action: str):
+    """callback dispatch：rev:skip / rev:pause"""
+    chat_id = query.message.chat_id
+    state = _review_state.get(chat_id)
+    if not state:
+        await query.answer("此 review 已過期", show_alert=True)
+        return
+
+    if action == "skip":
+        h = state["pending"][state["idx"]]
+        try:
+            from kobo_highlights_reader import mark_processed
+            await asyncio.to_thread(mark_processed, h.book_filename, h.timestamp)
+        except Exception as e:
+            logger.warning(f"mark_processed 失敗: {e}")
+        state["idx"] += 1
+        await query.answer("已跳過")
+        # 把按鈕拿掉避免重複按
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await _push_review_card(chat_id, query.get_bot())
+        return
+
+    if action == "pause":
+        del _review_state[chat_id]
+        await query.answer("已暫停")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await query.message.reply_text("⏸ 已暫停。隨時打 /review 重啟。")
+        return
+
+    await query.answer(f"未知 review 動作: {action}")
+
+
+async def _process_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                             state: dict, reaction_text: str):
+    """user 在 review 中傳文字 → 寫 inbox + 標記 processed + 推下一張。"""
+    chat_id = update.effective_chat.id
+    h = state["pending"][state["idx"]]
+
+    try:
+        from obsidian_inbox_writer import write_to_inbox
+        from kobo_highlights_reader import mark_processed
+        remote_path = await asyncio.to_thread(
+            write_to_inbox,
+            book_filename=h.book_filename,
+            book_title=h.book_title,
+            author=h.author,
+            highlight_text=h.text,
+            highlight_timestamp=h.timestamp,
+            user_reaction=reaction_text,
+            chapter=h.chapter,
+            note=h.note,
+        )
+        await asyncio.to_thread(mark_processed, h.book_filename, h.timestamp)
+    except Exception as e:
+        logger.exception("寫 inbox 失敗")
+        await update.message.reply_text(f"❌ 寫 Obsidian Inbox 失敗：{e}")
+        return
+
+    state["idx"] += 1
+    state["awaiting_text"] = False
+    await update.message.reply_html(
+        f"✅ 已存：<code>{html_escape(remote_path)}</code>"
+    )
+    await _push_review_card(chat_id, context.bot)
+
+
+# ─────────────────────────────────────────────
+# 統一 text dispatcher（review reaction 優先，再 fallback 到 URL handlers）
+# ─────────────────────────────────────────────
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """所有非 command 純文字的入口。Review reaction 優先、再看 URL。"""
+    if not update.message or not update.message.text:
+        return
+    chat_id = update.effective_chat.id
+    text = update.message.text
+
+    state = _review_state.get(chat_id)
+    has_url = bool(YOUTUBE_URL_RE.search(text) or CHANNEL_URL_RE.search(text))
+
+    # Priority 1: review reaction（必須 awaiting + 不是 URL）
+    if state and state.get("awaiting_text") and not has_url:
+        await _process_reaction(update, context, state, text)
+        return
+
+    # Priority 2: YouTube 影片 URL
+    if YOUTUBE_URL_RE.search(text):
+        await handle_youtube_url(update, context)
+        return
+
+    # Priority 3: channel / playlist URL
+    if CHANNEL_URL_RE.search(text):
+        await handle_channel_url(update, context)
+        return
+
+    # 其他純文字 — 沒事做（保持安靜）
+
+
+# ─────────────────────────────────────────────
+# Daily digest（每天 22:00 推 pending 數量）
+# ─────────────────────────────────────────────
+
+async def daily_digest_loop(bot, chat_id: int):
+    """每天 DAILY_REVIEW_DIGEST_HOUR 點推送 pending 提醒。"""
+    while True:
+        now = datetime.now()
+        target = now.replace(
+            hour=DAILY_REVIEW_DIGEST_HOUR, minute=0, second=0, microsecond=0,
+        )
+        if now >= target:
+            target += timedelta(days=1)
+        sleep_secs = (target - now).total_seconds()
+        logger.info(f"daily digest 下次觸發於 {target}（{int(sleep_secs)}s 後）")
+        await asyncio.sleep(sleep_secs)
+
+        try:
+            from kobo_highlights_reader import count_pending
+            count = await asyncio.to_thread(count_pending)
+            if count > 0:
+                await bot.send_message(
+                    chat_id,
+                    f"📚 你還有 <b>{count}</b> 條 highlights 沒 process。\n打 /review 開始。",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                logger.info("daily digest: 0 pending, 不推送")
+        except Exception as e:
+            logger.exception(f"daily digest 失敗: {e}")
+            try:
+                await bot.send_message(chat_id, f"⚠️ daily digest 失敗：{e}")
+            except Exception:
+                pass
+
+
+# ─────────────────────────────────────────────
 # 主程式
 # ─────────────────────────────────────────────
 
@@ -765,10 +1040,25 @@ def main():
             BotCommand("channels", "📡 訂閱清單（含退訂按鈕）"),
             BotCommand("list", "📋 最近處理過的影片"),
             BotCommand("run", "🚀 立刻跑 daily_brief"),
+            BotCommand("review", "📚 process pending Kobo highlights"),
+            BotCommand("pausereview", "⏸ 暫停 review"),
+            BotCommand("skipall", "🧹 把所有 pending 標記為已處理（清歷史用）"),
             BotCommand("sub", "➕ 新增訂閱（也可直接貼網址）"),
             BotCommand("unsub", "➖ 移除訂閱"),
             BotCommand("help", "❓ 用法說明"),
         ])
+
+        # 啟動 daily digest 排程（22:00 推 pending highlights 提醒）
+        chat_id_str = os.environ.get("TELEGRAM_CHAT_ID")
+        if chat_id_str:
+            try:
+                chat_id = int(chat_id_str)
+                asyncio.create_task(daily_digest_loop(application.bot, chat_id))
+                logger.info(f"✅ daily digest task 啟動（每天 {DAILY_REVIEW_DIGEST_HOUR}:00 推送）")
+            except ValueError:
+                logger.warning(f"TELEGRAM_CHAT_ID 不是有效整數：{chat_id_str}，daily digest 跳過")
+        else:
+            logger.warning("沒有 TELEGRAM_CHAT_ID，daily digest 跳過")
 
     app = Application.builder().token(token).post_init(post_init).build()
     app.add_handler(CallbackQueryHandler(handle_button))
@@ -777,22 +1067,15 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("run", cmd_run))
+    app.add_handler(CommandHandler("review", cmd_review))
+    app.add_handler(CommandHandler("pausereview", cmd_pausereview))
+    app.add_handler(CommandHandler("skipall", cmd_skipall))
     app.add_handler(CommandHandler("channels", cmd_channels))
     app.add_handler(CommandHandler("sub", cmd_sub))
     app.add_handler(CommandHandler("unsub", cmd_unsub))
-    # 影片連結 → 即時摘要
+    # 統一 text dispatcher：review reaction 優先，再 fallback 到 URL handlers
     app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(YOUTUBE_URL_RE),
-            handle_youtube_url,
-        )
-    )
-    # 頻道 / playlist 連結 → 跳訂閱確認
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(CHANNEL_URL_RE),
-            handle_channel_url,
-        )
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
     )
 
     logger.info("✅ bot_service 啟動")

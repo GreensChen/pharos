@@ -30,6 +30,7 @@ rsync -avz --delete \
     --exclude='summaries/' \
     --exclude='seen.json' \
     --exclude='channels.json' \
+    --exclude='review_state.json' \
     --exclude='.claude/' \
     --exclude='.git/' \
     --exclude='server/deploy.sh' \
