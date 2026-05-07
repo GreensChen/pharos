@@ -1,7 +1,7 @@
 {
   "_comment": "EN regex pattern -> 規範詞。翻譯前對 segment EN 做替換，並把所有 replace 值注入翻譯 system prompt 要求 LLM 原樣保留。發現新錯字時直接在這裡加一條。",
   "rules": {
-    "(?i)\\bopen\\s+claw\\b": "OpenCode",
-    "(?i)\\bclaude?[- ]?bot\\b": "ClaudeBot"
+    "(?i)\\bopen\\s+claw\\b": "OpenClaw",
+    "(?i)\\bclaude?[- ]?bot\\b": "Claude Code"
   }
 }
