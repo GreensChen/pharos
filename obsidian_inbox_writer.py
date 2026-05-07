@@ -13,7 +13,7 @@ from typing import Optional
 
 
 DROPBOX_OBSIDIAN_INBOX_PATH = os.environ.get(
-    "DROPBOX_OBSIDIAN_INBOX_PATH", "/Obsidian/0 Inbox"
+    "DROPBOX_OBSIDIAN_INBOX_PATH", "/Greens Obsidian/0 Inbox"
 )
 
 

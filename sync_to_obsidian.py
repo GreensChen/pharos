@@ -22,7 +22,7 @@ import shutil
 import sys
 from pathlib import Path
 
-VAULT_ROOT = Path.home() / "Dropbox" / "Obsidian"
+VAULT_ROOT = Path.home() / "Dropbox" / "Greens Obsidian"
 TRANSCRIPTS_DIR = VAULT_ROOT / "1 Sources" / "Transcripts"
 HIGHLIGHTS_DIR = VAULT_ROOT / "1 Sources" / "Highlights"
 KOBO_HIGHLIGHTS_SOURCE = Path.home() / "Dropbox" / "Kobo Highlights"
