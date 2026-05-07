@@ -780,9 +780,71 @@ def generate_text_cover(title: str, subtitle: str = "") -> bytes:
     return buf.getvalue()
 
 
+_SENT_END_CHARS = "。！？.!?"
+
+
+def _zh_complete(zh: str) -> bool:
+    """zh 結尾是否為句末標點。允許結尾有引號/括號/空白。"""
+    z = zh.rstrip("\"'」』）)] 　\n\t")
+    return bool(z) and z[-1] in _SENT_END_CHARS
+
+
+def _merge_unfinished_zh(segments, chapters):
+    """合併中文沒結尾標點的相鄰 segments。
+
+    YouTube 自動字幕無標點，merge_short_segments 在 30s 處硬切，
+    句子被段落邊界切開，視覺上像被插了 newline。這裡在渲染前把
+    連續未完句的段落黏回去，並 rebase chapters 索引。
+
+    規則：
+      - 上段 zh 不完整 且 speaker 一致 → 合併（en 用空白接、zh 直接接）
+      - chapter 邊界（chapter.start_index）強制不合併，避免跨章融合
+    """
+    if not segments:
+        return segments, chapters
+
+    chapter_starts = {ch["start_index"] for ch in chapters} if chapters else set()
+
+    new_segments = []
+    old_to_new = {}
+
+    for old_idx, seg in enumerate(segments):
+        speaker = seg.get("speaker", "")
+        prev = new_segments[-1] if new_segments else None
+        can_merge = (
+            prev is not None
+            and old_idx not in chapter_starts
+            and not _zh_complete(prev.get("zh", ""))
+            and prev.get("speaker", "") == speaker
+        )
+
+        if can_merge:
+            prev["en"] = (prev.get("en", "") + " " + seg.get("en", "")).strip()
+            prev["zh"] = prev.get("zh", "") + seg.get("zh", "")
+            old_to_new[old_idx] = len(new_segments) - 1
+        else:
+            new_segments.append(dict(seg))
+            old_to_new[old_idx] = len(new_segments) - 1
+
+    new_chapters = []
+    for ch in chapters or []:
+        new_ch = dict(ch)
+        new_ch["start_index"] = old_to_new.get(ch["start_index"], ch["start_index"])
+        new_ch["end_index"] = old_to_new.get(ch["end_index"], ch["end_index"])
+        new_chapters.append(new_ch)
+
+    diff = len(segments) - len(new_segments)
+    if diff > 0:
+        print(f"   🧷 合併未完句段落：{len(segments)} → {len(new_segments)}（合 {diff} 段）")
+
+    return new_segments, new_chapters
+
+
 def build_epub(segments, chapters, meta, output_path, render_timestamps: bool = False):
     """組裝雙語 ePub。"""
     print("📖 正在生成 ePub...")
+    # 先把被 30s 硬切切壞的句子黏回去，避免章節內出現怪斷行
+    segments, chapters = _merge_unfinished_zh(segments, chapters)
 
     book = epub.EpubBook()
     book.set_identifier(str(uuid.uuid4()))
