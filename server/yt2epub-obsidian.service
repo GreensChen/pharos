@@ -1,0 +1,18 @@
+[Unit]
+Description=yt2epub Obsidian bot service (Kobo highlights review + future captures)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yt2epub
+WorkingDirectory=/home/yt2epub/yt2epub
+ExecStart=/usr/bin/python3 -u /home/yt2epub/yt2epub/obsidian_bot.py
+Restart=on-failure
+RestartSec=30
+Environment="PYTHONUNBUFFERED=1"
+StandardOutput=append:/home/yt2epub/yt2epub/obsidian_bot.stdout.log
+StandardError=append:/home/yt2epub/yt2epub/obsidian_bot.stderr.log
+
+[Install]
+WantedBy=multi-user.target

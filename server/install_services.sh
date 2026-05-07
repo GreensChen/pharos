@@ -25,15 +25,17 @@ chown yt2epub:yt2epub "$PROJECT_DIR/.env"
 # 3. 複製 systemd unit 檔到系統目錄
 echo ""
 echo "→ 安裝 systemd unit..."
-cp "$PROJECT_DIR/server/yt2epub-bot.service"   /etc/systemd/system/
-cp "$PROJECT_DIR/server/yt2epub-brief.service" /etc/systemd/system/
-cp "$PROJECT_DIR/server/yt2epub-brief.timer"   /etc/systemd/system/
+cp "$PROJECT_DIR/server/yt2epub-bot.service"      /etc/systemd/system/
+cp "$PROJECT_DIR/server/yt2epub-obsidian.service" /etc/systemd/system/
+cp "$PROJECT_DIR/server/yt2epub-brief.service"    /etc/systemd/system/
+cp "$PROJECT_DIR/server/yt2epub-brief.timer"      /etc/systemd/system/
 systemctl daemon-reload
 
 # 4. 啟用 + 啟動
 echo ""
 echo "→ 啟用 + 啟動服務..."
 systemctl enable --now yt2epub-bot.service
+systemctl enable --now yt2epub-obsidian.service
 systemctl enable --now yt2epub-brief.timer
 
 # 5. 顯示狀態
