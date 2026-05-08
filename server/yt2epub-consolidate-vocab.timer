@@ -3,8 +3,8 @@ Description=Weekly vocabulary consolidation fallback
 Requires=yt2epub-consolidate-vocab.service
 
 [Timer]
-# 週日 23:00（在 Mac 平日中午跑過後、最後兜底）
-OnCalendar=Sun *-*-* 23:00:00
+# 週一早上 11:00（Mac 中午跑之前 1 小時、若 Mac 上週都沒跑就先兜底）
+OnCalendar=Mon *-*-* 11:00:00
 Persistent=true
 
 [Install]
