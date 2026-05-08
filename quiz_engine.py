@@ -25,6 +25,9 @@ except ImportError:
 DROPBOX_VAULT_BOOKS_PATH = os.environ.get(
     "DROPBOX_VAULT_BOOKS_PATH", "/Greens Obsidian/1 Sources/Books"
 )
+DROPBOX_VAULT_INTERVIEWS_PATH = os.environ.get(
+    "DROPBOX_VAULT_INTERVIEWS_PATH", "/Greens Obsidian/1 Sources/Interviews"
+)
 DROPBOX_VAULT_HIGHLIGHTS_PATH = os.environ.get(
     "DROPBOX_VAULT_HIGHLIGHTS_PATH", "/Greens Obsidian/1 Sources/Highlights"
 )
@@ -113,17 +116,24 @@ def _list_dropbox_md_files(folder: str) -> dict:
 
 
 def list_quizzable_books() -> list[dict]:
-    """vault 裡同時有 Books overview 跟 Highlights 的書。依 highlight 最後修改排序。"""
+    """vault 裡同時有 overview（Books 或 Interviews）+ Highlights 的內容。
+    依 highlight 最後修改排序。"""
     books_files = _list_dropbox_md_files(DROPBOX_VAULT_BOOKS_PATH)
+    interview_files = _list_dropbox_md_files(DROPBOX_VAULT_INTERVIEWS_PATH)
     hl_files = _list_dropbox_md_files(DROPBOX_VAULT_HIGHLIGHTS_PATH)
 
     quizzable = []
-    for fname in books_files:
+    for fname, overview_dir in (
+        [(f, DROPBOX_VAULT_BOOKS_PATH) for f in books_files]
+        + [(f, DROPBOX_VAULT_INTERVIEWS_PATH) for f in interview_files]
+    ):
         if fname not in hl_files:
             continue
+        kind = "interview" if overview_dir == DROPBOX_VAULT_INTERVIEWS_PATH else "book"
         quizzable.append({
             "title": fname.removesuffix(".md"),
-            "overview_path": f"{DROPBOX_VAULT_BOOKS_PATH}/{fname}",
+            "kind": kind,
+            "overview_path": f"{overview_dir}/{fname}",
             "highlights_path": f"{DROPBOX_VAULT_HIGHLIGHTS_PATH}/{fname}",
             "last_activity": hl_files[fname],
         })
