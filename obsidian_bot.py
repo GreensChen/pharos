@@ -239,6 +239,46 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _push_quiz_card(chat_id, context.bot)
 
 
+async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/ask <question> — 用整個 vault 當 context、Gemini 回答 + 存 conversation log。"""
+    if not context.args:
+        await update.message.reply_text(
+            "用法：/ask 你想問的問題\n\n"
+            "例：\n"
+            "  /ask 從我讀的書，你看出我關心什麼\n"
+            "  /ask 我的盲點是什麼\n"
+            "  /ask 整理我對 AI 的觀點演變"
+        )
+        return
+
+    question = " ".join(context.args).strip()
+    progress = await update.message.reply_text(
+        "🧠 讀你 vault 中..."
+    )
+    try:
+        from chat_engine import ask
+        result = await asyncio.to_thread(ask, question)
+    except Exception as e:
+        logger.exception("/ask failed")
+        await progress.edit_text(f"❌ 失敗：{e}")
+        return
+
+    answer = result.get("answer", "")
+    remote_path = result.get("remote_path", "")
+    # Telegram 4096 字限制 — 太長就只回開頭 + path
+    if len(answer) > 3500:
+        answer_snippet = answer[:3500] + "\n\n...（後略，完整內容已存 vault）"
+    else:
+        answer_snippet = answer
+
+    await progress.delete()
+    # 直接 send 一則新訊息（HTML escape 麻煩，直接 plain text）
+    await update.message.reply_text(answer_snippet)
+    await update.message.reply_html(
+        f"<i>已存：</i> <code>{html_escape(remote_path)}</code>"
+    )
+
+
 async def cmd_endquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id not in _quiz_state:
@@ -745,6 +785,7 @@ def main():
             BotCommand("skipall", "🧹 把所有 pending 標記為已處理（清歷史用）"),
             BotCommand("quiz", "🎯 出一題 active recall（[書名關鍵字]）"),
             BotCommand("endquiz", "⏹ 取消當前 quiz"),
+            BotCommand("ask", "🧠 用整個 vault 當 context 問問題"),
             BotCommand("help", "❓ 用法說明"),
         ])
 
@@ -769,6 +810,7 @@ def main():
     app.add_handler(CommandHandler("skipall", cmd_skipall))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("endquiz", cmd_endquiz))
+    app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
