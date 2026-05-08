@@ -189,6 +189,25 @@ def _extract_speakers_line(summary: str) -> tuple[str, str]:
     return speakers, body
 
 
+def _topical_tags_via_vocab(body: str, source_filename: str) -> list:
+    try:
+        from vocabulary_manager import apply_tags_to_capture
+        return apply_tags_to_capture(body, source_filename)
+    except Exception as e:
+        print(f"⚠️  vocab tagging 失敗：{e}")
+        return []
+
+
+def _build_tags_line(meta_tags: list, topical: list) -> str:
+    seen = set()
+    merged = []
+    for t in list(meta_tags) + list(topical):
+        if t and t not in seen:
+            seen.add(t)
+            merged.append(t)
+    return f"tags: [{', '.join(merged)}]"
+
+
 def render_video_md(
     title: str,
     channel: str,
@@ -198,6 +217,8 @@ def render_video_md(
 ) -> str:
     speakers, body = _extract_speakers_line(summary)
     captured_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    safe_stem = re.sub(r'[/\\:*?"<>|]', "", title)[:120].strip()
+    topical = _topical_tags_via_vocab(body, safe_stem + ".md")
 
     fm = [
         "---",
@@ -208,7 +229,7 @@ def render_video_md(
         f"video_id: {_yaml_str(video_id)}",
         f"speakers: {_yaml_str(speakers)}",
         f"captured_at: {_yaml_str(captured_at)}",
-        "tags: [video, capture]",
+        _build_tags_line(["video", "capture"], topical),
         "generated_by: gemini",
         "---",
         "",

@@ -227,6 +227,25 @@ def _extract_author_line(summary: str) -> tuple[str, str]:
     return author, body
 
 
+def _topical_tags_via_vocab(body: str, source_filename: str) -> list:
+    try:
+        from vocabulary_manager import apply_tags_to_capture
+        return apply_tags_to_capture(body, source_filename)
+    except Exception as e:
+        print(f"⚠️  vocab tagging 失敗：{e}")
+        return []
+
+
+def _build_tags_line(meta_tags: list, topical: list) -> str:
+    seen = set()
+    merged = []
+    for t in list(meta_tags) + list(topical):
+        if t and t not in seen:
+            seen.add(t)
+            merged.append(t)
+    return f"tags: [{', '.join(merged)}]"
+
+
 def render_article_md(
     title: str,
     summary: str,
@@ -236,6 +255,8 @@ def render_article_md(
 ) -> str:
     author, summary_body = _extract_author_line(summary)
     captured_at = captured_at or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    safe_stem = _safe_filename(title)
+    topical = _topical_tags_via_vocab(summary_body, safe_stem + ".md")
 
     fm = [
         "---",
@@ -244,7 +265,7 @@ def render_article_md(
         f"author: {_yaml_str(author)}",
         f"url: {_yaml_str(url)}",
         f"captured_at: {_yaml_str(captured_at)}",
-        "tags: [article, capture]",
+        _build_tags_line(["article", "capture"], topical),
         "generated_by: gemini",
         "---",
         "",
@@ -490,6 +511,8 @@ def save_screenshots_as_article(
     safe_title = _safe_filename(title)
     captured_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
+    safe_stem = _safe_filename(title)
+    topical = _topical_tags_via_vocab(body, safe_stem + ".md")
     fm = [
         "---",
         "type: post",
@@ -497,7 +520,7 @@ def save_screenshots_as_article(
         f"poster: {_yaml_str(poster)}",
         f"platform: {_yaml_str(platform)}",
         f"captured_at: {_yaml_str(captured_at)}",
-        "tags: [post, social, capture]",
+        _build_tags_line(["post", "social", "capture"], topical),
         "generated_by: gemini-vision-ocr",
         "---",
         "",

@@ -281,16 +281,36 @@ def _extract_lead_line(overview: str, key_pattern: str) -> tuple[str, str]:
     return value, body
 
 
+def _topical_tags_via_vocab(body: str, source_filename: str) -> list:
+    try:
+        from vocabulary_manager import apply_tags_to_capture
+        return apply_tags_to_capture(body, source_filename)
+    except Exception as e:
+        print(f"⚠️  vocab tagging 失敗：{e}")
+        return []
+
+
+def _build_tags_line(meta_tags: list, topical: list) -> str:
+    seen = set()
+    merged = []
+    for t in list(meta_tags) + list(topical):
+        if t and t not in seen:
+            seen.add(t)
+            merged.append(t)
+    return f"tags: [{', '.join(merged)}]"
+
+
 def render_book_md(title: str, author: str, overview: str, source_filename: str) -> str:
     extracted_author, body = _extract_lead_line(overview, "作者")
     final_author = extracted_author or author or ""
+    topical = _topical_tags_via_vocab(body, source_filename)
 
     fm = [
         "---",
         "type: book",
         f"title: {_yaml_str(title)}",
         f"author: {_yaml_str(final_author)}",
-        "tags: [book, overview]",
+        _build_tags_line(["book", "overview"], topical),
         "generated_by: gemini-grounded",
         "---",
         "",
@@ -315,13 +335,14 @@ def render_interview_md(
 ) -> str:
     """訪談 overview 渲染（type=interview）。"""
     participants, body = _extract_lead_line(overview, "對談人")
+    topical = _topical_tags_via_vocab(body, highlights_filename)
 
     fm = [
         "---",
         "type: interview",
         f"title: {_yaml_str(title)}",
         f"participants: {_yaml_str(participants)}",
-        "tags: [interview, overview]",
+        _build_tags_line(["interview", "overview"], topical),
         "generated_by: gemini-grounded",
         "---",
         "",
