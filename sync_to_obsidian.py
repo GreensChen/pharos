@@ -42,6 +42,24 @@ def _yaml_str(s) -> str:
     return f'"{s}"'
 
 
+def _find_matching_highlight(title: str) -> str:
+    """用 normalized name 找 1 Sources/Highlights/ 裡對應的檔。
+    回 highlight 檔名（不含 .md），找不到回空字串。"""
+    if not HIGHLIGHTS_DIR.exists():
+        return ""
+
+    def _norm(name: str) -> str:
+        n = name.removesuffix(".md").replace("_", "")
+        n = re.sub(r"\s+", " ", n).strip().lower()
+        return n
+
+    norm_title = _norm(title)
+    for f in HIGHLIGHTS_DIR.glob("*.md"):
+        if _norm(f.name) == norm_title:
+            return f.stem
+    return ""
+
+
 def render_transcript(data: dict) -> str:
     """把一份 _data.json 轉成 markdown。"""
     meta = data.get("meta", {})
@@ -81,6 +99,12 @@ def render_transcript(data: dict) -> str:
         body.append(f"*{podcast}*  ·  {date}".strip())
     if url:
         body.append(f"\n[原始影片]({url})")
+    # 連到對應的 Highlights（如果有畫過重點的話）
+    hl_stem = _find_matching_highlight(title)
+    if hl_stem:
+        body.append(
+            f"> 📌 我畫的重點: [[1 Sources/Highlights/{hl_stem}|{hl_stem}]]"
+        )
     body.append("")
 
     if participants:
