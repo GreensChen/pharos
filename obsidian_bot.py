@@ -80,6 +80,7 @@ def html_escape(s: str) -> str:
 # ─────────────────────────────────────────────
 
 _review_state: dict[int, dict] = {}
+_quiz_state: dict[int, dict] = {}
 
 
 async def _push_review_card(chat_id: int, bot):
@@ -180,6 +181,146 @@ async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _push_review_card(chat_id, context.bot)
 
 
+async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/quiz [keyword] — 出一題 3 選 1 active recall。
+    沒帶 keyword = 用最近活躍的書；帶 keyword 用 substring 找書。"""
+    chat_id = update.effective_chat.id
+    if chat_id in _quiz_state:
+        await update.message.reply_text(
+            "⚠️ 你正在答題中。先選 A/B/C 結束當前題、或 /endquiz 取消。"
+        )
+        return
+
+    keyword = " ".join(context.args).strip() if context.args else ""
+    await update.message.reply_text(
+        f"📚 找書中{'（' + keyword + '）' if keyword else ''}..."
+    )
+
+    try:
+        from quiz_engine import (
+            list_quizzable_books, find_book_by_keyword, generate_quiz,
+        )
+        if keyword:
+            books = await asyncio.to_thread(find_book_by_keyword, keyword)
+        else:
+            books = await asyncio.to_thread(list_quizzable_books)
+    except Exception as e:
+        logger.exception("list books 失敗")
+        await update.message.reply_text(f"❌ 列書失敗：{e}")
+        return
+
+    if not books:
+        if keyword:
+            await update.message.reply_text(
+                f"📭 沒找到書名包含「{keyword}」的書（要先有 overview + highlights 才能考）"
+            )
+        else:
+            await update.message.reply_text(
+                "📭 vault 裡還沒有可考的書（先跑 generate_book_overviews.py 生 overview）"
+            )
+        return
+
+    book = books[0]
+    await update.message.reply_html(f"🎯 出題：<b>{html_escape(book['title'])}</b>")
+
+    try:
+        quiz = await asyncio.to_thread(generate_quiz, book)
+    except Exception as e:
+        logger.exception("generate_quiz 失敗")
+        await update.message.reply_text(f"❌ 出題失敗：{e}")
+        return
+
+    _quiz_state[chat_id] = {"book": book, "quiz": quiz}
+    await _push_quiz_card(chat_id, context.bot)
+
+
+async def cmd_endquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in _quiz_state:
+        await update.message.reply_text("（沒在答題中）")
+        return
+    del _quiz_state[chat_id]
+    await update.message.reply_text("⏹ 已取消當前 quiz。")
+
+
+async def _push_quiz_card(chat_id: int, bot):
+    state = _quiz_state.get(chat_id)
+    if not state:
+        return
+    quiz = state["quiz"]
+    book = state["book"]
+
+    text_lines = [
+        f"📖 <b>{html_escape(book['title'])}</b>",
+        "",
+        f"<b>{html_escape(quiz['question'])}</b>",
+        "",
+    ]
+    for o in quiz["options"]:
+        text_lines.append(f"<b>{o['label']}</b>．{html_escape(o['text'])}")
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(o["label"], callback_data=f"quiz:{o['label']}")
+            for o in quiz["options"]
+        ],
+    ])
+    await bot.send_message(
+        chat_id,
+        "\n".join(text_lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb,
+    )
+
+
+async def _handle_quiz_choice(query, choice: str):
+    chat_id = query.message.chat_id
+    state = _quiz_state.get(chat_id)
+    if not state:
+        await query.answer("此題已過期", show_alert=True)
+        return
+
+    quiz = state["quiz"]
+    book = state["book"]
+    is_correct = (choice == quiz["correct"])
+
+    # save to vault
+    try:
+        from quiz_engine import save_quiz_response_to_dropbox
+        remote_path = await asyncio.to_thread(
+            save_quiz_response_to_dropbox,
+            book["title"], quiz, choice, is_correct,
+        )
+    except Exception as e:
+        logger.exception("save quiz 失敗")
+        remote_path = f"（存檔失敗：{e}）"
+
+    del _quiz_state[chat_id]
+    await query.answer("答對 ✅" if is_correct else "答錯 ❌")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    correct_text = next(
+        (o["text"] for o in quiz["options"] if o["label"] == quiz["correct"]),
+        "",
+    )
+    result_emoji = "✅" if is_correct else "❌"
+    feedback_lines = [
+        f"{result_emoji} {'答對' if is_correct else '答錯'}",
+        "",
+        f"<b>正解：{quiz['correct']}．{html_escape(correct_text)}</b>",
+        "",
+        f"💡 {html_escape(quiz['explanation'])}",
+        "",
+        f"<i>已存：</i> <code>{html_escape(remote_path)}</code>",
+        "",
+        "再來一題？打 /quiz",
+    ]
+    await query.message.reply_html("\n".join(feedback_lines))
+
+
 async def cmd_pausereview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/pausereview — 暫停當前 review。state 保留，下次 /review 從頭抓。"""
     chat_id = update.effective_chat.id
@@ -275,6 +416,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if action == "rev":
             await cb_review(query, payload)
+        elif action == "quiz":
+            await _handle_quiz_choice(query, payload)
         else:
             await query.answer(f"未知動作: {action}")
     except Exception as e:
@@ -394,6 +537,8 @@ def main():
             BotCommand("review", "📚 process pending Kobo highlights"),
             BotCommand("pausereview", "⏸ 暫停 review"),
             BotCommand("skipall", "🧹 把所有 pending 標記為已處理（清歷史用）"),
+            BotCommand("quiz", "🎯 出一題 active recall（[書名關鍵字]）"),
+            BotCommand("endquiz", "⏹ 取消當前 quiz"),
             BotCommand("help", "❓ 用法說明"),
         ])
 
@@ -416,6 +561,8 @@ def main():
     app.add_handler(CommandHandler("review", cmd_review))
     app.add_handler(CommandHandler("pausereview", cmd_pausereview))
     app.add_handler(CommandHandler("skipall", cmd_skipall))
+    app.add_handler(CommandHandler("quiz", cmd_quiz))
+    app.add_handler(CommandHandler("endquiz", cmd_endquiz))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     logger.info("✅ obsidian_bot 啟動")
