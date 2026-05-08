@@ -66,17 +66,28 @@ USER_PROMPT_TEMPLATE = """請為這本書生成 overview：
 
 請用以下格式輸出（保留 markdown 標題層級）：
 
-## 一句話摘要
-（30 字內、抓主旨）
+## 摘要
+寫 **2-3 段、共 250-400 字** 的書籍摘要。內容要回答：
+1. 這本書要解決什麼問題、為什麼這個問題重要
+2. 作者提出什麼樣的核心解答 / 論點 / 框架
+3. 讀者讀完會帶走什麼（最關鍵的 1-2 個 takeaway）
+不要寫成大綱式 bullets — 要寫成連貫的段落，像在向沒看過的人介紹這本書。
 
 ## 核心主題
 - （3-5 個 bullet、每個一句話、抓作者最想傳達的概念）
 
 ## 論證骨架
-（3-5 段，每段 50-100 字，描述作者怎麼一步步推論出他的核心觀點。重點是「論證流程」不是「章節列表」）
+寫 **5-8 段、每段 120-200 字**，把作者整本書的論證脈絡攤開：
+
+第一段：作者從什麼觀察 / 問題出發，為什麼既有答案不夠
+中間幾段：作者一步步建立論證 — 每段聚焦一個關鍵 move（提出概念、舉例證明、回應反駁、推論到下一層）
+最後一段：論證收尾在哪、把讀者帶到什麼結論或行動
+
+重點：**論證流程**不是章節列表。讀者看完這節應該能複述「作者大概怎麼想出他的結論」。
+有具體例子、數據、案例的話帶進來（例如「作者用 X 公司案例證明 Y」）。
 
 ## 關鍵概念詞表
-- **概念 A**：作者怎麼定義 / 怎麼用
+- **概念 A**：作者怎麼定義 / 怎麼用（1-2 句）
 - **概念 B**：...
 （5-10 個重要術語，未來 quiz 會考）
 
@@ -85,7 +96,7 @@ USER_PROMPT_TEMPLATE = """請為這本書生成 overview：
 - 不適合：...
 
 ## 同領域延伸 / 對話書
-- **書名（作者）**：跟本書的關聯
+- **書名（作者）**：跟本書的關聯（一句話）
 （3-5 本）
 
 只輸出上述內容，不要前言、不要結語、不要 ```markdown``` 包裝。
@@ -147,8 +158,8 @@ def call_gemini_with_grounding(title: str, author: str, max_retries: int = 2) ->
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT,
         tools=[types.Tool(google_search=types.GoogleSearch())],
-        max_output_tokens=4096,
-        thinking_config=types.ThinkingConfig(thinking_budget=1024),
+        max_output_tokens=6144,
+        thinking_config=types.ThinkingConfig(thinking_budget=2048),
     )
 
     last_err = None
