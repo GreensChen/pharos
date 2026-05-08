@@ -306,7 +306,11 @@ def render_book_md(title: str, author: str, overview: str, source_filename: str)
     return "\n".join(fm)
 
 
-def render_interview_md(title: str, overview: str, source_filename: str) -> str:
+def render_interview_md(
+    title: str, overview: str,
+    highlights_filename: str,
+    transcript_filename: str,
+) -> str:
     """訪談 overview 渲染（type=interview）。"""
     participants, body = _extract_lead_line(overview, "對談人")
 
@@ -324,10 +328,15 @@ def render_interview_md(title: str, overview: str, source_filename: str) -> str:
     if participants:
         fm.append(f"*{participants}*")
     fm.append("")
-    # 同名 transcript 直接 link
-    transcript_link = f"[[{source_filename.removesuffix('.md')}]]"
-    fm.append(f"> 🎙 完整逐字稿: {transcript_link}")
-    fm.append(f"> 📌 我畫的重點: {transcript_link}")
+    # 用完整路徑 + alias，避免 Obsidian / AI 解析時把兩個 link 視為同一個目標
+    transcript_stem = transcript_filename.removesuffix(".md")
+    highlights_stem = highlights_filename.removesuffix(".md")
+    fm.append(
+        f"> 🎙 完整逐字稿: [[1 Sources/Transcripts/{transcript_stem}|{transcript_stem}]]"
+    )
+    fm.append(
+        f"> 📌 我畫的重點: [[1 Sources/Highlights/{highlights_stem}|{highlights_stem}]]"
+    )
     fm.append("")
     fm.append(body)
     return "\n".join(fm)
@@ -355,10 +364,10 @@ def main():
         n = re.sub(r"\s+", " ", n).strip().lower()
         return n
 
-    transcript_norms = set()
+    transcript_norms: dict[str, str] = {}  # norm_key -> actual filename
     if TRANSCRIPTS_DIR.exists():
         for f in TRANSCRIPTS_DIR.glob("*.md"):
-            transcript_norms.add(_norm(f.name))
+            transcript_norms[_norm(f.name)] = f.name
 
     files = sorted(HIGHLIGHTS_DIR.glob("*.md"))
     if args.only:
@@ -370,7 +379,9 @@ def main():
             continue
         meta = parse_highlight_file(f)
         safe = _safe_filename(meta["title"])
-        is_interview = _norm(f.name) in transcript_norms
+        norm_key = _norm(f.name)
+        is_interview = norm_key in transcript_norms
+        transcript_filename = transcript_norms.get(norm_key, "")
         if is_interview:
             out_path = INTERVIEWS_DIR / f"{safe}.md"
             doc_type = "interview"
@@ -379,17 +390,17 @@ def main():
             doc_type = "book"
         if out_path.exists() and not args.refresh:
             continue
-        todo.append((f, meta, out_path, doc_type))
+        todo.append((f, meta, out_path, doc_type, transcript_filename))
         if args.limit and len(todo) >= args.limit:
             break
 
-    n_interviews = sum(1 for _, _, _, t in todo if t == "interview")
+    n_interviews = sum(1 for _, _, _, t, _ in todo if t == "interview")
     n_books = len(todo) - n_interviews
     print(
         f"待處理 {len(todo)} 個（書 {n_books}、訪談 {n_interviews}；"
         f"總共 {len(files)} 條 highlights、跳過已存在）"
     )
-    for _, meta, out, t in todo:
+    for _, meta, out, t, _ in todo:
         kind = "📚" if t == "book" else "🎙"
         print(f"  {kind} {meta['title']}  →  {out.name}")
 
@@ -401,7 +412,7 @@ def main():
         return
 
     print()
-    for i, (src, meta, out_path, doc_type) in enumerate(todo, 1):
+    for i, (src, meta, out_path, doc_type, transcript_fn) in enumerate(todo, 1):
         title = meta["title"]
         author = meta["author"]
         kind_label = "訪談" if doc_type == "interview" else "書"
@@ -416,7 +427,11 @@ def main():
             print(f"  ❌ 失敗：{e}")
             continue
         if doc_type == "interview":
-            md = render_interview_md(title, overview, meta["filename"])
+            md = render_interview_md(
+                title, overview,
+                highlights_filename=meta["filename"],
+                transcript_filename=transcript_fn,
+            )
         else:
             md = render_book_md(title, author, overview, meta["filename"])
         out_path.write_text(md, encoding="utf-8")
