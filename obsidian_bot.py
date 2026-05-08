@@ -246,8 +246,8 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
             "用法：/ask <問題>\n\n"
-            "啟動後直接打字繼續對話。想結束就講「好先這樣吧」/「夠了」/「OK 結束」"
-            "之類的話，bot 會自己偵測、回給你重點摘要 + 存 vault。\n\n"
+            "啟動後直接打字繼續對話、不用每輪打 /ask。想結束打 /endchat、"
+            "bot 會給整段摘要 + 存進 vault。\n\n"
             "例：\n"
             "  /ask 從我讀的書，你看出我關心什麼\n"
             "  /ask 我的盲點是什麼"
@@ -270,7 +270,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress = await update.message.reply_text("🧠 讀你 vault 中（首次需要 5-10 秒）...")
 
     try:
-        from chat_engine import build_first_user_turn, chat_turn, parse_end_signal
+        from chat_engine import build_first_user_turn, chat_turn
         first_user_text = await asyncio.to_thread(build_first_user_turn, question)
         history = [{"role": "user", "text": first_user_text}]
         answer = await asyncio.to_thread(chat_turn, history)
@@ -280,26 +280,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     history.append({"role": "model", "text": answer})
-
-    # 第一輪不太可能 __END__，但保險檢查
-    is_end, summary = parse_end_signal(answer)
     await progress.delete()
-
-    if is_end:
-        # 第一輪就 END（user 問了又收？）— 直接存
-        await _reply_long(update, summary or answer)
-        try:
-            remote_path = await asyncio.to_thread(
-                _save_current_chat_with_history,
-                chat_id, history, datetime.now(), summary,
-            )
-            await update.message.reply_html(
-                f"✅ 已存：<code>{html_escape(remote_path)}</code>"
-            )
-        except Exception as e:
-            logger.exception("save chat failed")
-            await update.message.reply_text(f"⚠️ 存檔失敗：{e}")
-        return
 
     # 進入持續對話狀態
     _chat_state[chat_id] = {
@@ -308,7 +289,7 @@ async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     await _reply_long(update, answer)
     await update.message.reply_html(
-        "💬 <i>對話中、之後直接打字接續、跟我說「先這樣吧」之類的就會收尾</i>"
+        "💬 <i>對話中、之後直接打字接續、/endchat 結束並存 vault</i>"
     )
 
 
@@ -359,7 +340,7 @@ async def _continue_chat(update: Update, text: str):
 
     progress = await update.message.reply_text("💭 想想...")
     try:
-        from chat_engine import chat_turn, parse_end_signal
+        from chat_engine import chat_turn
         answer = await asyncio.to_thread(chat_turn, state["history"])
     except Exception as e:
         logger.exception("chat turn failed")
@@ -367,28 +348,38 @@ async def _continue_chat(update: Update, text: str):
         return
 
     state["history"].append({"role": "model", "text": answer})
-    is_end, summary = parse_end_signal(answer)
     await progress.delete()
+    await _reply_long(update, answer)
 
-    if is_end:
-        await _reply_long(update, summary or answer)
-        try:
-            from chat_engine import save_conversation_log
-            remote_path = await asyncio.to_thread(
-                save_conversation_log,
-                state["history"], state["started_at"], summary,
-            )
-            await update.message.reply_html(
-                f"✅ 對話收尾、存：<code>{html_escape(remote_path)}</code>"
-            )
-        except Exception as e:
-            logger.exception("save chat failed")
-            await update.message.reply_text(f"⚠️ 存檔失敗：{e}")
-        finally:
-            _chat_state.pop(chat_id, None)
+
+async def cmd_endchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/endchat — 結束當前對話、Gemini 給摘要、存 vault。"""
+    chat_id = update.effective_chat.id
+    state = _chat_state.get(chat_id)
+    if not state:
+        await update.message.reply_text("（沒在對話中）")
         return
 
-    await _reply_long(update, answer)
+    progress = await update.message.reply_text("✍️ 寫摘要中...")
+    try:
+        from chat_engine import generate_end_summary, save_conversation_log
+        summary = await asyncio.to_thread(generate_end_summary, state["history"])
+        remote_path = await asyncio.to_thread(
+            save_conversation_log,
+            state["history"], state["started_at"], summary,
+        )
+    except Exception as e:
+        logger.exception("/endchat failed")
+        await progress.edit_text(f"❌ 收尾失敗：{e}")
+        return
+    finally:
+        _chat_state.pop(chat_id, None)
+
+    await progress.delete()
+    await _reply_long(update, summary)
+    await update.message.reply_html(
+        f"✅ 對話收尾、存：<code>{html_escape(remote_path)}</code>"
+    )
 
 
 async def cmd_endquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -902,7 +893,8 @@ def main():
             BotCommand("skipall", "🧹 把所有 pending 標記為已處理（清歷史用）"),
             BotCommand("quiz", "🎯 出一題 active recall（[書名關鍵字]）"),
             BotCommand("endquiz", "⏹ 取消當前 quiz"),
-            BotCommand("ask", "🧠 用整個 vault 當 context 問問題"),
+            BotCommand("ask", "🧠 用整個 vault 當 context 開始對話"),
+            BotCommand("endchat", "💬 結束當前對話、寫摘要存 vault"),
             BotCommand("help", "❓ 用法說明"),
         ])
 
@@ -928,6 +920,7 @@ def main():
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("endquiz", cmd_endquiz))
     app.add_handler(CommandHandler("ask", cmd_ask))
+    app.add_handler(CommandHandler("endchat", cmd_endchat))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
