@@ -477,16 +477,6 @@ def save_screenshots_as_article(
             f"post-{datetime.now().strftime('%Y%m%d-%H%M')}"
         )
     safe_title = _safe_filename(title)
-
-    # 上傳每張原圖到 9 Attachments
-    ts_compact = datetime.now().strftime("%Y%m%d-%H%M%S")
-    image_filenames = []
-    for i, img in enumerate(images, 1):
-        fname = f"{safe_title}_{ts_compact}_{i:02d}.jpg"
-        remote = f"{DROPBOX_VAULT_ATTACHMENTS_PATH}/{fname}"
-        _upload_image(remote, img)
-        image_filenames.append(fname)
-
     captured_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
     fm = [
@@ -516,11 +506,6 @@ def save_screenshots_as_article(
     if caption.strip():
         fm.append(f"> 📌 補充：{caption.strip()}")
         fm.append("")
-    fm.append("## 截圖")
-    fm.append("")
-    for fname in image_filenames:
-        fm.append(f"![[9 Attachments/{fname}]]")
-    fm.append("")
     fm.append(body or "(OCR 失敗)")
 
     md = "\n".join(fm)

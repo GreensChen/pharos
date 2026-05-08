@@ -584,10 +584,14 @@ async def _process_screenshots(
         except Exception:
             pass
         return
+    poster_line = (
+        f"\n👤 {html_escape(result.get('poster', ''))}"
+        if result.get("poster") else ""
+    )
     msg = (
         f"✅ 已存進 Obsidian\n\n"
-        f"📰 <b>{html_escape(result.get('title', ''))}</b>\n"
-        f"🖼 {result.get('image_count', 0)} 張原圖存 9 Attachments\n"
+        f"📰 <b>{html_escape(result.get('title', ''))}</b>"
+        f"{poster_line}\n"
         f"📁 <code>{html_escape(result.get('remote_path', ''))}</code>"
     )
     try:
