@@ -75,6 +75,49 @@ def upload_to_kobo(local_epub: str, remote_filename: Optional[str] = None) -> st
     return remote_path
 
 
+def list_kobo_files(folder: Optional[str] = None):
+    """列出 Kobo 同步資料夾裡的檔案（預設只列 epub/kepub）。
+
+    Returns:
+        list of dict: {name, path, size, modified}
+    """
+    folder = folder or KOBO_REMOTE_DIR
+    dbx = _get_client()
+    out = []
+    try:
+        res = dbx.files_list_folder(folder)
+    except Exception as e:
+        raise RuntimeError(f"讀取 Dropbox 失敗：{e}")
+
+    while True:
+        for entry in res.entries:
+            # 只取檔案（避免列出子資料夾）
+            if not hasattr(entry, "size"):
+                continue
+            name = entry.name
+            if not (name.lower().endswith(".epub") or name.lower().endswith(".kepub.epub")):
+                continue
+            out.append({
+                "name": name,
+                "path": entry.path_lower,  # Dropbox 刪除用 path_lower 也 OK
+                "path_display": entry.path_display,
+                "size": entry.size,
+                "modified": entry.client_modified.isoformat() if entry.client_modified else "",
+            })
+        if not res.has_more:
+            break
+        res = dbx.files_list_folder_continue(res.cursor)
+
+    out.sort(key=lambda x: x["modified"], reverse=True)
+    return out
+
+
+def delete_kobo_file(remote_path: str) -> None:
+    """刪除 Dropbox 上的單一檔案。"""
+    dbx = _get_client()
+    dbx.files_delete_v2(remote_path)
+
+
 def is_configured() -> bool:
     """檢查 Dropbox API 環境變數是否齊全。"""
     return all(

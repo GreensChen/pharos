@@ -132,9 +132,52 @@ def build_main_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📡 訂閱清單", callback_data="menu:channels")],
         [InlineKeyboardButton("➕ 新增訂閱", callback_data="menu:addhelp")],
         [InlineKeyboardButton("📋 最近影片", callback_data="menu:list")],
+        [InlineKeyboardButton("🗂 管理 Kobo 檔案", callback_data="menu:kobo")],
         [InlineKeyboardButton("🚀 立即跑 daily_brief", callback_data="menu:run")],
         [InlineKeyboardButton("❓ 說明", callback_data="menu:help")],
     ])
+
+
+# ─────────────────────────────────────────────
+# Kobo (Dropbox) 檔案管理
+# ─────────────────────────────────────────────
+
+# 因 Dropbox 檔名 + 中文 path 太長，無法塞進 callback_data (64 bytes)，用 token map
+_pending_kobo_del: dict = {}  # token -> dropbox path
+
+
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}TB"
+
+
+def build_kobo_files_keyboard(files: list) -> InlineKeyboardMarkup:
+    import secrets
+    rows = []
+    for f in files[:30]:  # 上限 30 筆，避免訊息過長
+        token = secrets.token_urlsafe(8)
+        _pending_kobo_del[token] = f["path"]
+        # 名字截到 35 字避免按鈕太寬
+        display = f["name"]
+        if display.endswith(".kepub.epub"):
+            display = display[:-11]
+        elif display.endswith(".epub"):
+            display = display[:-5]
+        if len(display) > 32:
+            display = display[:30] + "…"
+        rows.append([
+            InlineKeyboardButton(f"📕 {display}", callback_data="noop"),
+            InlineKeyboardButton(f"✕ {_human_size(f['size'])}", callback_data=f"kobodel:{token}"),
+        ])
+    rows.append([
+        InlineKeyboardButton("🔄 重新整理", callback_data="menu:kobo"),
+        InlineKeyboardButton("🗑 全部刪除", callback_data="kobodel:ALL_CONFIRM"),
+    ])
+    rows.append([InlineKeyboardButton("關閉", callback_data="menu:close")])
+    return InlineKeyboardMarkup(rows)
 
 
 HELP_TEXT = (
@@ -160,13 +203,24 @@ async def cb_convert(query, video_id: str):
     channel = data.get("channel", "")
     safe_title = html_escape(title)
 
-    # 標記為轉檔中
-    await query.answer("⏳ 排隊中...")
-    await query.edit_message_reply_markup(
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⏳ 轉檔中...", callback_data="noop"),
-        ]])
-    )
+    # 標記為轉檔中。query.answer() 必須在 ~30s 內、不能等 subprocess 跑完
+    try:
+        await query.answer("⏳ 排隊中...")
+    except Exception as e:
+        logger.warning(f"query.answer 失敗（query 可能太舊）：{e}")
+    # 後續所有訊息更新都用 bot.* + chat_id/message_id，避免 callback_query 過期
+    chat_id_early = query.message.chat_id
+    message_id_early = query.message.message_id
+    bot_early = query.get_bot()
+    try:
+        await bot_early.edit_message_reply_markup(
+            chat_id=chat_id_early, message_id=message_id_early,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⏳ 轉檔中...", callback_data="noop"),
+            ]]),
+        )
+    except Exception as e:
+        logger.warning(f"標記轉檔中按鈕更新失敗：{e}")
 
     async with conversion_lock:
         logger.info(f"開始轉檔: {video_id}  {title}")
@@ -264,9 +318,17 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await cb_unsub(query, payload)
         elif action == "menu":
             await cb_menu(query, payload)
+        elif action == "kobodel":
+            await cb_kobodel(query, payload)
         else:
             await query.answer(f"未知動作: {action}")
     except Exception as e:
+        # 「Query is too old」是 callback_query 過期的良性錯誤（長任務後）
+        # 真實業務多半已成功，不再嚇唬使用者
+        msg = str(e)
+        if "Query is too old" in msg or "query id is invalid" in msg:
+            logger.warning(f"忽略 callback_query 過期: {e}")
+            return
         logger.exception(f"按鈕 handler 失敗: {e}")
         try:
             await query.message.reply_text(f"❌ 處理失敗: {e}")
@@ -443,7 +505,85 @@ async def cb_menu(query, action: str):
         await query.edit_message_text(HELP_TEXT, parse_mode=ParseMode.HTML)
         return
 
+    if action == "kobo":
+        await query.answer("讀取中...")
+        try:
+            import dropbox_uploader
+            files = await asyncio.to_thread(dropbox_uploader.list_kobo_files)
+        except Exception as e:
+            await query.edit_message_text(f"❌ 讀取 Dropbox 失敗：<code>{html_escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+            return
+        if not files:
+            await query.edit_message_text("（Kobo 資料夾沒有 epub）")
+            return
+        total = sum(f["size"] for f in files)
+        text = (
+            f"🗂 <b>Kobo 同步資料夾</b>\n"
+            f"共 <b>{len(files)}</b> 個檔案 / {_human_size(total)}\n"
+            f"（點 ✕ 刪除單一；最多顯示 30 筆）"
+        )
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=build_kobo_files_keyboard(files))
+        return
+
     await query.answer(f"未知選單: {action}")
+
+
+async def cb_kobodel(query, token: str):
+    """刪除 Dropbox Kobo 資料夾裡的檔案。token = 'ALL_CONFIRM' / 'ALL_YES' / <secret>"""
+    import dropbox_uploader
+
+    if token == "ALL_CONFIRM":
+        await query.answer()
+        await query.edit_message_text(
+            "⚠️ 確定要刪除 Kobo 資料夾<b>所有 epub</b>？",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ 確定全部刪", callback_data="kobodel:ALL_YES"),
+                InlineKeyboardButton("❌ 取消", callback_data="menu:kobo"),
+            ]]),
+        )
+        return
+
+    if token == "ALL_YES":
+        await query.answer("刪除中...")
+        try:
+            files = await asyncio.to_thread(dropbox_uploader.list_kobo_files)
+            for f in files:
+                await asyncio.to_thread(dropbox_uploader.delete_kobo_file, f["path"])
+        except Exception as e:
+            await query.edit_message_text(f"❌ 全部刪除失敗：<code>{html_escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+            return
+        _pending_kobo_del.clear()
+        await query.edit_message_text(f"🗑 已刪除 {len(files)} 個檔案")
+        return
+
+    # 單檔刪除
+    path = _pending_kobo_del.pop(token, None)
+    if not path:
+        await query.answer("⚠️ 已過期，請重新打開列表", show_alert=True)
+        return
+    await query.answer("刪除中...")
+    try:
+        await asyncio.to_thread(dropbox_uploader.delete_kobo_file, path)
+    except Exception as e:
+        await query.edit_message_text(f"❌ 刪除失敗：<code>{html_escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+        return
+    # 重新拉清單刷新
+    try:
+        files = await asyncio.to_thread(dropbox_uploader.list_kobo_files)
+    except Exception as e:
+        await query.edit_message_text(f"✅ 已刪除，但讀清單失敗：<code>{html_escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+        return
+    if not files:
+        await query.edit_message_text("✅ 已刪除（Kobo 資料夾現在沒有 epub 了）")
+        return
+    total = sum(f["size"] for f in files)
+    text = (
+        f"🗂 <b>Kobo 同步資料夾</b>\n"
+        f"共 <b>{len(files)}</b> 個檔案 / {_human_size(total)}\n"
+        f"（點 ✕ 刪除單一；最多顯示 30 筆）"
+    )
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=build_kobo_files_keyboard(files))
 
 
 def _extract_brief_summary(output: str) -> str:
