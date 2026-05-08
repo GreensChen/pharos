@@ -1,0 +1,14 @@
+[Unit]
+Description=yt2epub vocabulary consolidation (server fallback)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=yt2epub
+WorkingDirectory=/home/yt2epub/yt2epub
+# threshold=5 防小變動、max-age-days=5 確保只在 Mac 那邊太久沒跑時兜底
+ExecStart=/usr/bin/python3 /home/yt2epub/yt2epub/consolidate_vocabulary.py --threshold 5 --max-age-days 5
+Environment="PYTHONUNBUFFERED=1"
+StandardOutput=append:/home/yt2epub/yt2epub/consolidate_vocab.stdout.log
+StandardError=append:/home/yt2epub/yt2epub/consolidate_vocab.stderr.log

@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly vocabulary consolidation fallback
+Requires=yt2epub-consolidate-vocab.service
+
+[Timer]
+# 週日 23:00（在 Mac 平日中午跑過後、最後兜底）
+OnCalendar=Sun *-*-* 23:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

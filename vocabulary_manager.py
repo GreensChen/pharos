@@ -315,26 +315,8 @@ def propose_consolidation(vocab: dict) -> list:
     return []
 
 
-def apply_consolidation(vocab: dict, merges: list) -> int:
-    """
-    套用 merges：
-    - rewrite vault 所有 md 的 tags
-    - update vocab（合併 count、刪舊 entry）
-    - 寫 changelog 到 vault `2 Atomic Notes/Vocabulary Changelog.md`
-    - save vocab
-    回傳：受影響檔案數
-    """
-    if not merges:
-        return 0
-    if USE_DROPBOX_API:
-        # Server 端的 consolidation 暫不實作（rewrite 一堆檔太貴）
-        # 只做 Mac-local
-        print("⚠️  Server 端不執行 consolidation、跳過")
-        return 0
-
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    rename_map = {}
+def _build_rename_map(merges: list) -> dict:
+    rename = {}
     for m in merges:
         merged = m.get("merged", []) or []
         into = m.get("into", "")
@@ -342,10 +324,32 @@ def apply_consolidation(vocab: dict, merges: list) -> int:
             continue
         for old in merged:
             if old != into:
-                rename_map[old] = into
-    if not rename_map:
-        return 0
+                rename[old] = into
+    return rename
 
+
+def _rewrite_tags_in_text(text: str, rename_map: dict):
+    """如果 text 的 tags array 含有要改的 tag、回新 text；否則回 None。"""
+    m = re.search(r"^(tags:\s*\[)(.*?)(\]\s*)$", text, re.MULTILINE)
+    if not m:
+        return None
+    tags = [t.strip() for t in m.group(2).split(",") if t.strip()]
+    if not any(t in rename_map for t in tags):
+        return None
+    seen = set()
+    new_tags = []
+    for t in tags:
+        mapped = rename_map.get(t, t)
+        if mapped not in seen:
+            seen.add(mapped)
+            new_tags.append(mapped)
+    if new_tags == tags:
+        return None
+    new_line = f"{m.group(1)}{', '.join(new_tags)}{m.group(3)}"
+    return text[:m.start()] + new_line + text[m.end():]
+
+
+def _apply_consolidation_local(rename_map: dict) -> int:
     files_changed = 0
     for md in LOCAL_VAULT.glob("**/*.md"):
         if md.name.startswith("."):
@@ -354,28 +358,71 @@ def apply_consolidation(vocab: dict, merges: list) -> int:
             text = md.read_text(encoding="utf-8")
         except Exception:
             continue
-        m = re.search(r"^(tags:\s*\[)(.*?)(\]\s*)$", text, re.MULTILINE)
-        if not m:
+        new_text = _rewrite_tags_in_text(text, rename_map)
+        if new_text is None:
             continue
-        tags = [t.strip() for t in m.group(2).split(",") if t.strip()]
-        seen = set()
-        new_tags = []
-        for t in tags:
-            mapped = rename_map.get(t, t)
-            if mapped not in seen:
-                seen.add(mapped)
-                new_tags.append(mapped)
-        if new_tags == tags:
-            continue
-        new_line = f"{m.group(1)}{', '.join(new_tags)}{m.group(3)}"
-        new_text = text[:m.start()] + new_line + text[m.end():]
         try:
             md.write_text(new_text, encoding="utf-8")
             files_changed += 1
         except Exception:
             continue
+    return files_changed
 
-    # update vocab
+
+def _apply_consolidation_dropbox(rename_map: dict) -> int:
+    """Server 端：Dropbox API 走遍 /Greens Obsidian/、改寫受影響 md。"""
+    import time as _time
+    from dropbox_uploader import _get_client
+    from dropbox.files import WriteMode
+
+    dbx = _get_client()
+    files_changed = 0
+
+    try:
+        result = dbx.files_list_folder("/Greens Obsidian", recursive=True)
+        entries = list(result.entries)
+        while result.has_more:
+            result = dbx.files_list_folder_continue(result.cursor)
+            entries.extend(result.entries)
+    except Exception as e:
+        print(f"⚠️  Dropbox list_folder 失敗: {e}")
+        return 0
+
+    affected = set(rename_map.keys())
+    for entry in entries:
+        if not entry.name.endswith(".md"):
+            continue
+        path = getattr(entry, "path_display", None) or getattr(entry, "path_lower", None)
+        if not path:
+            continue
+        try:
+            _, resp = dbx.files_download(path)
+            text = resp.content.decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        # 快速 pre-check：若文字裡都不含 affected tag 字面，跳過 download 的 parse
+        if not any(t in text for t in affected):
+            continue
+        new_text = _rewrite_tags_in_text(text, rename_map)
+        if new_text is None:
+            continue
+        try:
+            dbx.files_upload(
+                new_text.encode("utf-8"),
+                path,
+                mode=WriteMode("overwrite"),
+                autorename=False,
+                mute=True,
+            )
+            files_changed += 1
+            _time.sleep(0.3)  # gentle rate limit
+        except Exception as e:
+            print(f"⚠️  upload {path} 失敗: {e}")
+    return files_changed
+
+
+def _update_vocab_after_merge(vocab: dict, rename_map: dict, merges: list):
+    today = datetime.now().strftime("%Y-%m-%d")
     for old, into in rename_map.items():
         if old in vocab.get("tags", {}):
             old_info = vocab["tags"].pop(old)
@@ -387,14 +434,11 @@ def apply_consolidation(vocab: dict, merges: list) -> int:
                     vocab["tags"][into].get("count", 0) +
                     old_info.get("count", 0)
                 )
-                # merge examples（最多保留 5）
-                merged_examples = list(set(
+                merged_examples = list(dict.fromkeys(
                     (vocab["tags"][into].get("examples") or []) +
                     (old_info.get("examples") or [])
                 ))
                 vocab["tags"][into]["examples"] = merged_examples[-5:]
-
-    # log entries
     for m in merges:
         vocab.setdefault("merge_log", []).append({
             "date": today,
@@ -405,31 +449,87 @@ def apply_consolidation(vocab: dict, merges: list) -> int:
     vocab["new_since_last_consolidation"] = 0
     vocab["last_consolidation"] = today
 
-    # changelog markdown
-    changelog_path = LOCAL_VAULT / "2 Atomic Notes" / "Vocabulary Changelog.md"
-    changelog_path.parent.mkdir(parents=True, exist_ok=True)
-    if changelog_path.exists():
-        existing_log = changelog_path.read_text(encoding="utf-8")
-    else:
-        existing_log = (
-            "---\n"
-            "type: meta\n"
-            "title: \"Vocabulary Changelog\"\n"
-            "tags: [meta]\n"
-            "---\n\n"
-            "# Vocabulary Changelog\n\n"
-            "AI 自動 tag 整合的紀錄。每一段是一次 consolidation 跑出來的合併動作。\n\n"
-        )
-    block = [f"## {today}", ""]
+
+def _build_changelog_block(merges: list, files_changed: int, today: str) -> str:
+    lines = [f"## {today}", ""]
     for m in merges:
-        block.append(
+        lines.append(
             f"- 合併 `{', '.join(m.get('merged', []))}` → `{m.get('into', '')}`"
         )
-        block.append(f"  - 原因：{m.get('reason', '')}")
-    block.append("")
-    block.append(f"**影響檔案**：{files_changed} 個")
-    block.append("")
-    changelog_path.write_text(existing_log + "\n".join(block) + "\n", encoding="utf-8")
+        lines.append(f"  - 原因：{m.get('reason', '')}")
+    lines.append("")
+    lines.append(f"**影響檔案**：{files_changed} 個")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+CHANGELOG_HEADER = (
+    "---\n"
+    "type: meta\n"
+    "title: \"Vocabulary Changelog\"\n"
+    "tags: [meta]\n"
+    "---\n\n"
+    "# Vocabulary Changelog\n\n"
+    "AI 自動 tag 整合的紀錄。每一段是一次 consolidation 跑出來的合併動作。\n\n"
+)
+
+
+def _write_changelog_local(merges: list, files_changed: int):
+    today = datetime.now().strftime("%Y-%m-%d")
+    path = LOCAL_VAULT / "2 Atomic Notes" / "Vocabulary Changelog.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.exists() else CHANGELOG_HEADER
+    path.write_text(
+        existing + _build_changelog_block(merges, files_changed, today),
+        encoding="utf-8",
+    )
+
+
+def _write_changelog_dropbox(merges: list, files_changed: int):
+    from dropbox_uploader import _get_client
+    from dropbox.files import WriteMode
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    remote = "/Greens Obsidian/2 Atomic Notes/Vocabulary Changelog.md"
+    dbx = _get_client()
+    try:
+        _, resp = dbx.files_download(remote)
+        existing = resp.content.decode("utf-8", errors="replace")
+    except Exception:
+        existing = CHANGELOG_HEADER
+    new_text = existing + _build_changelog_block(merges, files_changed, today)
+    dbx.files_upload(
+        new_text.encode("utf-8"),
+        remote,
+        mode=WriteMode("overwrite"),
+        autorename=False,
+        mute=True,
+    )
+
+
+def apply_consolidation(vocab: dict, merges: list) -> int:
+    """
+    套用 merges：
+    - rewrite vault 所有 md 的 tags（Mac 走 local fs、Server 走 Dropbox API）
+    - update vocab（合併 count、刪舊 entry）
+    - 寫 changelog 到 vault `2 Atomic Notes/Vocabulary Changelog.md`
+    - save vocab
+    回傳：受影響檔案數
+    """
+    if not merges:
+        return 0
+    rename_map = _build_rename_map(merges)
+    if not rename_map:
+        return 0
+
+    if USE_DROPBOX_API:
+        files_changed = _apply_consolidation_dropbox(rename_map)
+        _update_vocab_after_merge(vocab, rename_map, merges)
+        _write_changelog_dropbox(merges, files_changed)
+    else:
+        files_changed = _apply_consolidation_local(rename_map)
+        _update_vocab_after_merge(vocab, rename_map, merges)
+        _write_changelog_local(merges, files_changed)
 
     save_vocabulary(vocab)
     return files_changed

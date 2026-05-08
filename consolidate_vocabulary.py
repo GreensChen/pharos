@@ -32,12 +32,12 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="只列出提案、不動任何檔")
     parser.add_argument("--threshold", type=int, default=0,
                         help="累積 N 個新 tag 才跑（小於 N 直接 skip、給 cron 用）")
+    parser.add_argument("--max-age-days", type=int, default=0,
+                        help="距上次 consolidation 至少 N 天才跑（給 server fallback 用）")
     args = parser.parse_args()
 
-    if USE_DROPBOX_API:
-        print("⚠️  目前環境沒 Mac Dropbox folder、不執行 consolidation（需要本地 fs 改寫 md 檔）")
-        sys.exit(0)
-
+    mode = "Dropbox API" if USE_DROPBOX_API else "local fs"
+    print(f"模式：{mode}")
     vocab = load_vocabulary()
     new_count = vocab.get("new_since_last_consolidation", 0)
     print(f"vocab：{len(vocab.get('tags', {}))} 個 tag、新增自上次整合：{new_count}")
@@ -45,6 +45,19 @@ def main():
     if args.threshold and new_count < args.threshold:
         print(f"沒到 threshold（{new_count} < {args.threshold}）、跳過")
         return
+
+    if args.max_age_days:
+        last = vocab.get("last_consolidation")
+        if last:
+            from datetime import datetime, date
+            try:
+                last_d = datetime.strptime(last, "%Y-%m-%d").date()
+                age = (date.today() - last_d).days
+                if age < args.max_age_days:
+                    print(f"距上次 consolidation {age} 天、< {args.max_age_days}、跳過")
+                    return
+            except Exception:
+                pass
 
     print("\n🤔 Gemini 找 merge 機會中...")
     merges = propose_consolidation(vocab)
