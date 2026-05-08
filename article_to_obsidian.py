@@ -322,25 +322,29 @@ def save_text_as_spark(text: str) -> dict:
     return {"remote_path": remote_path}
 
 
-SCREENSHOT_USER_PROMPT = """這是社群文章的截圖（{n_images} 張）。請只做兩件事：
+SCREENSHOT_USER_PROMPT = """這是社群文章的截圖（{n_images} 張）。請做以下事：
 
 1. 找出**發文者**（從可見的姓名 / handle / 頭像 / 平台 logo 判斷）
-2. **完整 OCR 內文**（按截圖順序拼起來、保留段落分隔；如果是 thread / 回文也全部拼上）
-
-不要摘要、不要評論、不要分析、不要做主題延伸。只要「發文者 + 內文」。
+2. 找出**發文時間**（截圖上的時間戳，例如 "2 小時前"、"5月7日"、"2025/04/30 14:30"。盡量保留原始格式）
+3. **完整 OCR 內文**（按截圖順序拼起來、保留段落分隔；如果是 thread / 回文也全部拼上、別漏）
+4. 寫一段**簡短摘要**（純概括、不評論、不延伸）
 
 輸出格式（嚴格遵守，每一行的前綴都不能改）：
 
 發文者：姓名 (@handle, 平台名)
 平台：Twitter / Threads / Facebook / Instagram / LinkedIn / 微博 / 其他
+發文時間：（截圖上看到的時間、保留原樣；看不到就寫「（不詳）」）
 標題：（用內文前 30 字濃縮一個短標題、用來當檔名、不要含特殊字元 / 引號）
+
+## 摘要
+
+（1 段、80-150 字。純概括發文者在這篇講了什麼、不要評論不要延伸不要加你自己角度）
 
 ## 內文
 
-（OCR 拼好的完整文字、保留換行與段落）
+（OCR 拼好的完整文字、保留換行與段落、不翻譯、不修飾）
 
-如果發文者完全看不出來就寫 `發文者：（不詳）`，平台也一樣。
-**絕對不要寫摘要、論點、關鍵概念那些東西。**
+如果發文者 / 時間完全看不出來就寫「（不詳）」。
 
 {caption_block}
 """
@@ -374,11 +378,13 @@ SCREENSHOT_SYSTEM_PROMPT = """你是一位 OCR 助理。你的工作是看截圖
 """
 
 
-def _extract_poster_meta(text: str) -> tuple[str, str, str, str]:
-    """從 Gemini 輸出抓 發文者 / 平台 / 標題，回 (poster, platform, title, body)。"""
+def _extract_poster_meta(text: str) -> tuple[str, str, str, str, str]:
+    """從 Gemini 輸出抓 發文者 / 平台 / 發文時間 / 標題，
+    回 (poster, platform, posted_at, title, body)。"""
     lines = text.split("\n")
     poster = ""
     platform = ""
+    posted_at = ""
     title = ""
     consumed = 0
     for i, line in enumerate(lines):
@@ -388,6 +394,7 @@ def _extract_poster_meta(text: str) -> tuple[str, str, str, str]:
             continue
         m_poster = re.match(r"^發文者[:：]\s*(.+)$", s)
         m_platform = re.match(r"^平台[:：]\s*(.+)$", s)
+        m_time = re.match(r"^發文時間[:：]\s*(.+)$", s)
         m_title = re.match(r"^標題[:：]\s*(.+)$", s)
         if m_poster:
             poster = m_poster.group(1).strip()
@@ -395,13 +402,16 @@ def _extract_poster_meta(text: str) -> tuple[str, str, str, str]:
         elif m_platform:
             platform = m_platform.group(1).strip()
             consumed = i + 1
+        elif m_time:
+            posted_at = m_time.group(1).strip()
+            consumed = i + 1
         elif m_title:
             title = m_title.group(1).strip()
             consumed = i + 1
         else:
             break
     body = "\n".join(lines[consumed:]).lstrip("\n")
-    return poster, platform, title, body
+    return poster, platform, posted_at, title, body
 
 
 def summarize_screenshots_with_gemini(
@@ -460,7 +470,7 @@ def save_screenshots_as_article(
         raise RuntimeError("沒有截圖")
 
     raw = summarize_screenshots_with_gemini(images, caption=caption)
-    poster, platform, title, body = _extract_poster_meta(raw)
+    poster, platform, posted_at, title, body = _extract_poster_meta(raw)
     if not title:
         first_line = body.strip().split("\n", 1)[0].strip() if body else ""
         title = first_line[:40] if first_line else (
@@ -485,6 +495,7 @@ def save_screenshots_as_article(
         f"title: {_yaml_str(title)}",
         f"poster: {_yaml_str(poster)}",
         f"platform: {_yaml_str(platform)}",
+        f"posted_at: {_yaml_str(posted_at)}",
         f"captured_at: {_yaml_str(captured_at)}",
         f"image_count: {len(images)}",
         "tags: [post, social, capture]",
@@ -493,10 +504,14 @@ def save_screenshots_as_article(
         "",
         f"# {title}",
     ]
+    meta_lines = []
     if poster:
-        fm.append(f"**發文者**：{poster}")
+        meta_lines.append(f"**發文者**：{poster}")
     if platform:
-        fm.append(f"**平台**：{platform}")
+        meta_lines.append(f"**平台**：{platform}")
+    if posted_at:
+        meta_lines.append(f"**發文時間**：{posted_at}")
+    fm.extend(meta_lines)
     fm.append("")
     if caption.strip():
         fm.append(f"> 📌 補充：{caption.strip()}")
@@ -505,8 +520,6 @@ def save_screenshots_as_article(
     fm.append("")
     for fname in image_filenames:
         fm.append(f"![[9 Attachments/{fname}]]")
-    fm.append("")
-    fm.append("## 內文")
     fm.append("")
     fm.append(body or "(OCR 失敗)")
 
