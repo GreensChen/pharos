@@ -6,11 +6,11 @@ set -e
 
 SERVER_IP="${SERVER_IP:?Please set SERVER_IP env var: export SERVER_IP=1.2.3.4}"
 REMOTE_USER="root"
-REMOTE_DIR="/home/yt2epub/yt2epub"
+REMOTE_DIR="/home/yt2epub/pharos"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "=========================================="
-echo "Deploy yt2epub → $SERVER_IP"
+echo "Deploy Pharos → $SERVER_IP"
 echo "=========================================="
 echo ""
 echo "Local:  $LOCAL_DIR"

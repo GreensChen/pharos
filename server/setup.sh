@@ -5,7 +5,7 @@
 set -e
 
 echo "=========================================="
-echo "yt2epub Server Setup"
+echo "Pharos Server Setup"
 echo "=========================================="
 
 # 1. 更新系統
@@ -38,8 +38,8 @@ fi
 
 # 4. 建專案目錄
 echo ""
-echo "→ 建立 ~yt2epub/yt2epub/ 目錄..."
-sudo -u yt2epub mkdir -p /home/yt2epub/yt2epub
+echo "→ 建立 ~yt2epub/pharos/ 目錄..."
+sudo -u yt2epub mkdir -p /home/yt2epub/pharos
 
 # 5. 設定基本防火牆（只允許 SSH）
 echo ""

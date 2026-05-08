@@ -1,0 +1,18 @@
+[Unit]
+Description=Pharos Telegram bot (YouTube → epub conversion)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yt2epub
+WorkingDirectory=/home/yt2epub/pharos
+ExecStart=/usr/bin/python3 -u /home/yt2epub/pharos/bot_service.py
+Restart=on-failure
+RestartSec=30
+Environment="PYTHONUNBUFFERED=1"
+StandardOutput=append:/home/yt2epub/pharos/bot_service.stdout.log
+StandardError=append:/home/yt2epub/pharos/bot_service.stderr.log
+
+[Install]
+WantedBy=multi-user.target

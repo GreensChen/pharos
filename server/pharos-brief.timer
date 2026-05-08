@@ -1,11 +1,11 @@
 [Unit]
-Description=Trigger yt2epub daily brief at 15:00 Asia/Taipei
+Description=Trigger Pharos daily brief at 15:00 Asia/Taipei
 
 [Timer]
 # 15:00 Taipei time = 07:00 UTC
 OnCalendar=*-*-* 07:00:00 UTC
 Persistent=true
-Unit=yt2epub-brief.service
+Unit=pharos-brief.service
 
 [Install]
 WantedBy=timers.target

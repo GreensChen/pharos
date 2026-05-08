@@ -1,6 +1,11 @@
-# yt2epub
+# Pharos
+
+> Φάρος — lighthouse. The beacon that ferries YouTube content into your Kobo for slow reading.
 
 把 YouTube 影片變成繁體中文 epub，自動推送到 Kobo。
+
+姊妹專案：[Anamnesis](https://github.com/GreensChen/anamnesis) — 把 Kobo 重點 / 截圖 / 文章
+/ 影片摘要彙整到 Obsidian，並提供 vault-aware Q&A。
 
 ## 用途
 
