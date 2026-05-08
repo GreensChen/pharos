@@ -27,6 +27,7 @@ obsidian_bot.py — Obsidian 知識庫 Telegram bot（跟 yt2epub bot 分開）
 import asyncio
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -465,20 +466,63 @@ async def _process_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE,
     await _push_review_card(chat_id, context.bot)
 
 
+YOUTUBE_URL_RE = re.compile(
+    r"(https?://(?:www\.|m\.)?(?:youtube\.com/(?:watch\?[^\s]*v=|shorts/|live/|embed/)|youtu\.be/)[\w\-]{11}[^\s]*)"
+)
+
+
+def _extract_youtube_url(text: str) -> str | None:
+    m = YOUTUBE_URL_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+async def _save_youtube_to_obsidian(update: Update, url: str):
+    """user 貼 YouTube URL → Gemini 摘要 → 寫 vault Videos folder。"""
+    progress = await update.message.reply_html(
+        f"🎬 摘要中... <code>{html_escape(url)}</code>"
+    )
+    try:
+        from youtube_to_obsidian import save_video_summary
+        result = await asyncio.to_thread(save_video_summary, url)
+    except Exception as e:
+        logger.exception("YouTube summary failed")
+        await progress.edit_text(f"❌ 摘要失敗：{e}")
+        return
+
+    title = result.get("title", "")
+    channel = result.get("channel", "")
+    remote_path = result.get("remote_path", "")
+    msg_lines = [
+        "✅ 已存進 Obsidian",
+        "",
+        f"📺 <b>{html_escape(title)}</b>",
+    ]
+    if channel:
+        msg_lines.append(f"🎙 {html_escape(channel)}")
+    msg_lines.append(f"📁 <code>{html_escape(remote_path)}</code>")
+    await progress.edit_text("\n".join(msg_lines), parse_mode=ParseMode.HTML)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """所有非 command 純文字。目前只處理 review reaction，未來擴增原生靈感 capture。"""
+    """所有非 command 純文字。優先序：review reaction → YouTube URL → 純文字 spark。"""
     if not update.message or not update.message.text:
         return
     chat_id = update.effective_chat.id
     text = update.message.text
 
+    # Priority 1: review reaction
     state = _review_state.get(chat_id)
     if state and state.get("awaiting_text"):
         await _process_reaction(update, context, state, text)
         return
 
-    # 不在 review 中：暫時 silent。未來這裡接「原生靈感 → Obsidian」
-    # 提示 user 可以做什麼
+    # Priority 2: YouTube URL → 摘要 + 存 vault
+    yt_url = _extract_youtube_url(text)
+    if yt_url:
+        await _save_youtube_to_obsidian(update, yt_url)
+        return
+
+    # Priority 3: plain text — 未來 spark capture
     await update.message.reply_html(
         "💡 收到一段文字，但你現在不在 review 中。\n"
         "未來這裡會把訊息直接存進 Obsidian Inbox 當靈感，目前先 reply 確認。\n"
