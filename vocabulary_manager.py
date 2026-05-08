@@ -30,12 +30,49 @@ except ImportError:
 
 GEMINI_MODEL = "gemini-3-flash-preview"
 
-LOCAL_VAULT = Path.home() / "Dropbox" / "Greens Obsidian"
+def _resolve_local_vault() -> Path:
+    """找實際 vault 路徑。優先 macOS Dropbox 真實路徑（CloudStorage）、
+    再 fallback 到傳統 ~/Dropbox 符號連結。launchd 在 sandbox 下可能無法
+    跨 symlink 進 CloudStorage、所以直接用實體路徑最穩。"""
+    candidates = [
+        Path.home() / "Library" / "CloudStorage" / "Dropbox" / "Greens Obsidian",
+        Path.home() / "Dropbox" / "Greens Obsidian",
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+        except (OSError, PermissionError):
+            continue
+    # 都沒有 → fallback path（會走 Dropbox API 模式）
+    return candidates[0]
+
+
+LOCAL_VAULT = _resolve_local_vault()
 LOCAL_VOCAB_PATH = LOCAL_VAULT / ".vocabulary.json"
 DROPBOX_VOCAB_PATH = "/Greens Obsidian/.vocabulary.json"
 
-# Mac 上 Dropbox 桌面 client 會把資料夾掛在 LOCAL_VAULT；server 沒有
-USE_DROPBOX_API = not LOCAL_VAULT.exists()
+
+def _local_vault_accessible() -> bool:
+    """測 LOCAL_VAULT 是否真的可讀。
+    launchd 在 macOS TCC 限制下不能讀 ~/Library/CloudStorage、即便檔案存在。
+    這裡嘗試實際讀一個檔來判斷有沒有讀權限、不只是 .exists()。"""
+    if not LOCAL_VAULT.exists():
+        return False
+    # 試讀 vocab 檔（如果有），沒有就試列 vault 目錄
+    try:
+        if LOCAL_VOCAB_PATH.exists():
+            with open(LOCAL_VOCAB_PATH, "rb") as f:
+                f.read(1)
+        else:
+            next(iter(LOCAL_VAULT.iterdir()), None)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+# launchd 跑時 LOCAL_VAULT.exists() 為 True 但讀檔被 TCC 擋、所以要實測
+USE_DROPBOX_API = not _local_vault_accessible()
 
 
 def _empty_vocab() -> dict:
