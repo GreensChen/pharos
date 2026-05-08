@@ -299,8 +299,10 @@ def render_book_md(title: str, author: str, overview: str, source_filename: str)
     if final_author:
         fm.append(f"*{final_author}*")
     fm.append("")
-    highlight_link = f"[[{source_filename.removesuffix('.md')}]]"
-    fm.append(f"> 📌 我的 highlights: {highlight_link}")
+    # 用 full path link 避開「Books/<stem> 跟 Highlights/<stem> 同名」造成 Obsidian
+    # 把 [[stem]] 解析成自己（同 folder 同 stem 優先）→ Highlights 收不到 backlink
+    hl_stem = source_filename.removesuffix(".md")
+    fm.append(f"> 📌 我的 highlights: [[1 Sources/Highlights/{hl_stem}|{hl_stem}]]")
     fm.append("")
     fm.append(body)
     return "\n".join(fm)
