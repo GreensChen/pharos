@@ -216,9 +216,10 @@ def render_article_md(
     title: str,
     summary: str,
     url: str = "",
+    original_text: str = "",
     captured_at: str | None = None,
 ) -> str:
-    author, body = _extract_author_line(summary)
+    author, summary_body = _extract_author_line(summary)
     captured_at = captured_at or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
     fm = [
@@ -240,7 +241,14 @@ def render_article_md(
     if url:
         fm.append(f"[🔗 原始文章]({url})")
         fm.append("")
-    fm.append(body)
+    fm.append(summary_body)
+    if original_text and original_text.strip():
+        fm.append("")
+        fm.append("---")
+        fm.append("")
+        fm.append("## 原文")
+        fm.append("")
+        fm.append(original_text.strip())
     return "\n".join(fm)
 
 
@@ -266,7 +274,9 @@ def save_article_from_url(url: str) -> dict:
             f"網頁內容太短或抓不到（{len(body)} 字），可能需要登入或 JS 渲染"
         )
     summary = summarize_with_gemini(title or url, body, source_url=url)
-    md = render_article_md(title or "untitled", summary, url=url)
+    md = render_article_md(
+        title or "untitled", summary, url=url, original_text=body,
+    )
 
     safe_title = _safe_filename(title or f"article-{datetime.now().strftime('%Y%m%d-%H%M')}")
     remote_path = f"{DROPBOX_VAULT_ARTICLES_PATH}/{safe_title}.md"
@@ -275,14 +285,13 @@ def save_article_from_url(url: str) -> dict:
 
 
 def save_text_as_article(text: str, title: str = "") -> dict:
-    """user 複製貼來的長文字 → 摘要 → 寫 Articles/。"""
+    """user 複製貼來的長文字 → 摘要 → 寫 Articles/。原文也保留。"""
     if not title:
-        # 從第一行抓 title
         first_line = text.strip().split("\n", 1)[0].strip()
         title = first_line[:80] if first_line else f"text-{datetime.now().strftime('%Y%m%d-%H%M')}"
 
     summary = summarize_with_gemini(title, text)
-    md = render_article_md(title, summary, url="")
+    md = render_article_md(title, summary, url="", original_text=text)
 
     safe_title = _safe_filename(title)
     remote_path = f"{DROPBOX_VAULT_ARTICLES_PATH}/{safe_title}.md"
