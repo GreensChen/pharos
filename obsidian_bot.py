@@ -82,6 +82,8 @@ def html_escape(s: str) -> str:
 
 _review_state: dict[int, dict] = {}
 _quiz_state: dict[int, dict] = {}
+# 多輪對話 state — /ask 啟動、user 直接打字接續、Gemini 自己偵測結束
+_chat_state: dict[int, dict] = {}
 # Telegram 多張截圖會用 media_group_id 串起來、分多次 update 進來。
 # 累積在這裡、用 1.5s debounce 收齊再一次 process。
 _pending_media_groups: dict[str, dict] = {}
@@ -240,43 +242,153 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/ask <question> — 用整個 vault 當 context、Gemini 回答 + 存 conversation log。"""
+    """/ask <question> — 啟動多輪對話。之後直接打字接續、Gemini 偵測「先這樣吧」自動結束。"""
     if not context.args:
         await update.message.reply_text(
-            "用法：/ask 你想問的問題\n\n"
+            "用法：/ask <問題>\n\n"
+            "啟動後直接打字繼續對話。想結束就講「好先這樣吧」/「夠了」/「OK 結束」"
+            "之類的話，bot 會自己偵測、回給你重點摘要 + 存 vault。\n\n"
             "例：\n"
             "  /ask 從我讀的書，你看出我關心什麼\n"
-            "  /ask 我的盲點是什麼\n"
-            "  /ask 整理我對 AI 的觀點演變"
+            "  /ask 我的盲點是什麼"
         )
         return
 
     question = " ".join(context.args).strip()
-    progress = await update.message.reply_text(
-        "🧠 讀你 vault 中..."
-    )
+    chat_id = update.effective_chat.id
+
+    # 已在 chat 中又打 /ask → 把現在的存掉、起新對話
+    if chat_id in _chat_state:
+        try:
+            await asyncio.to_thread(
+                _save_current_chat, chat_id, end_summary="（被新 /ask 打斷）",
+            )
+        except Exception:
+            pass
+        _chat_state.pop(chat_id, None)
+
+    progress = await update.message.reply_text("🧠 讀你 vault 中（首次需要 5-10 秒）...")
+
     try:
-        from chat_engine import ask
-        result = await asyncio.to_thread(ask, question)
+        from chat_engine import build_first_user_turn, chat_turn, parse_end_signal
+        first_user_text = await asyncio.to_thread(build_first_user_turn, question)
+        history = [{"role": "user", "text": first_user_text}]
+        answer = await asyncio.to_thread(chat_turn, history)
     except Exception as e:
         logger.exception("/ask failed")
         await progress.edit_text(f"❌ 失敗：{e}")
         return
 
-    answer = result.get("answer", "")
-    remote_path = result.get("remote_path", "")
-    # Telegram 4096 字限制 — 太長就只回開頭 + path
-    if len(answer) > 3500:
-        answer_snippet = answer[:3500] + "\n\n...（後略，完整內容已存 vault）"
-    else:
-        answer_snippet = answer
+    history.append({"role": "model", "text": answer})
 
+    # 第一輪不太可能 __END__，但保險檢查
+    is_end, summary = parse_end_signal(answer)
     await progress.delete()
-    # 直接 send 一則新訊息（HTML escape 麻煩，直接 plain text）
-    await update.message.reply_text(answer_snippet)
+
+    if is_end:
+        # 第一輪就 END（user 問了又收？）— 直接存
+        await _reply_long(update, summary or answer)
+        try:
+            remote_path = await asyncio.to_thread(
+                _save_current_chat_with_history,
+                chat_id, history, datetime.now(), summary,
+            )
+            await update.message.reply_html(
+                f"✅ 已存：<code>{html_escape(remote_path)}</code>"
+            )
+        except Exception as e:
+            logger.exception("save chat failed")
+            await update.message.reply_text(f"⚠️ 存檔失敗：{e}")
+        return
+
+    # 進入持續對話狀態
+    _chat_state[chat_id] = {
+        "history": history,
+        "started_at": datetime.now(),
+    }
+    await _reply_long(update, answer)
     await update.message.reply_html(
-        f"<i>已存：</i> <code>{html_escape(remote_path)}</code>"
+        "💬 <i>對話中、之後直接打字接續、跟我說「先這樣吧」之類的就會收尾</i>"
     )
+
+
+async def _reply_long(update: Update, text: str):
+    """Telegram 4096 字限制、超長就切開回。"""
+    LIMIT = 3800
+    if len(text) <= LIMIT:
+        await update.message.reply_text(text)
+        return
+    # 簡單切：找最近的兩個換行
+    while text:
+        if len(text) <= LIMIT:
+            await update.message.reply_text(text)
+            return
+        cut = text.rfind("\n\n", 0, LIMIT)
+        if cut == -1:
+            cut = text.rfind("\n", 0, LIMIT)
+        if cut == -1:
+            cut = LIMIT
+        await update.message.reply_text(text[:cut])
+        text = text[cut:].lstrip("\n")
+
+
+def _save_current_chat(chat_id: int, end_summary: str = "") -> str:
+    """thread helper：存目前 chat_state 內容到 vault、回傳 path。caller 負責 pop state。"""
+    state = _chat_state.get(chat_id)
+    if not state:
+        return ""
+    from chat_engine import save_conversation_log
+    return save_conversation_log(
+        state["history"], state["started_at"], end_summary=end_summary,
+    )
+
+
+def _save_current_chat_with_history(chat_id: int, history: list, started_at, end_summary: str = "") -> str:
+    """直接接收 history，不依 chat_state。給「第一輪就 END」這種沒進 state 的情境用。"""
+    from chat_engine import save_conversation_log
+    return save_conversation_log(history, started_at, end_summary=end_summary)
+
+
+async def _continue_chat(update: Update, text: str):
+    """user 在 chat 中打字 → Gemini 多輪追問。"""
+    chat_id = update.effective_chat.id
+    state = _chat_state.get(chat_id)
+    if not state:
+        return
+    state["history"].append({"role": "user", "text": text})
+
+    progress = await update.message.reply_text("💭 想想...")
+    try:
+        from chat_engine import chat_turn, parse_end_signal
+        answer = await asyncio.to_thread(chat_turn, state["history"])
+    except Exception as e:
+        logger.exception("chat turn failed")
+        await progress.edit_text(f"❌ 失敗：{e}")
+        return
+
+    state["history"].append({"role": "model", "text": answer})
+    is_end, summary = parse_end_signal(answer)
+    await progress.delete()
+
+    if is_end:
+        await _reply_long(update, summary or answer)
+        try:
+            from chat_engine import save_conversation_log
+            remote_path = await asyncio.to_thread(
+                save_conversation_log,
+                state["history"], state["started_at"], summary,
+            )
+            await update.message.reply_html(
+                f"✅ 對話收尾、存：<code>{html_escape(remote_path)}</code>"
+            )
+        except Exception as e:
+            logger.exception("save chat failed")
+            await update.message.reply_text(f"⚠️ 存檔失敗：{e}")
+        finally:
+            _chat_state.pop(chat_id, None)
+        return
+
+    await _reply_long(update, answer)
 
 
 async def cmd_endquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -711,7 +823,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _process_reaction(update, context, state, text)
         return
 
-    # Priority 2: YouTube URL → Gemini 看影片
+    # Priority 2: 多輪 chat 接續（user 在 /ask 啟動的對話中）
+    if chat_id in _chat_state:
+        await _continue_chat(update, text)
+        return
+
+    # Priority 3: YouTube URL → Gemini 看影片
     yt_url = _extract_youtube_url(text)
     if yt_url:
         await _save_youtube_to_obsidian(update, yt_url)
