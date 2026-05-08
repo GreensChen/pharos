@@ -64,8 +64,10 @@ def main():
 
     if not merges:
         print("✅ 沒有需要合併的 tag")
-        # reset counter 即使沒 merge 也要 reset
+        # reset counter + 標記今天已經 attempt 過、避免同天重複跑
+        from datetime import datetime
         vocab["new_since_last_consolidation"] = 0
+        vocab["last_consolidation"] = datetime.now().strftime("%Y-%m-%d")
         save_vocabulary(vocab)
         return
 
