@@ -322,43 +322,27 @@ def save_text_as_spark(text: str) -> dict:
     return {"remote_path": remote_path}
 
 
-SCREENSHOT_USER_PROMPT = """這是一篇社群文章的截圖（{n_images} 張）。請：
+SCREENSHOT_USER_PROMPT = """這是社群文章的截圖（{n_images} 張）。請只做兩件事：
 
-1. 先 OCR 每張截圖的全部文字
-2. 把多張的內容拼接成一篇完整文章
-3. 對拼接後的內容寫摘要
+1. 找出**發文者**（從可見的姓名 / handle / 頭像 / 平台 logo 判斷）
+2. **完整 OCR 內文**（按截圖順序拼起來、保留段落分隔；如果是 thread / 回文也全部拼上）
 
-輸出格式：
+不要摘要、不要評論、不要分析、不要做主題延伸。只要「發文者 + 內文」。
 
-**第一行必須是 `標題：xxx`**（標題從文章內容歸納、最多 50 字、不要含特殊字元）。
-**第二行必須是 `作者：name（身份）`**（找不到就寫 `作者：（不詳）`）。
+輸出格式（嚴格遵守，每一行的前綴都不能改）：
 
-例如：
-標題：Naval 對 AI 時代的價值論
-作者：Naval Ravikant（AngelList 創辦人）
+發文者：姓名 (@handle, 平台名)
+平台：Twitter / Threads / Facebook / Instagram / LinkedIn / 微博 / 其他
+標題：（用內文前 30 字濃縮一個短標題、用來當檔名、不要含特殊字元 / 引號）
 
-## 一句話摘要
-30-60 字。
+## 內文
 
-## 作者 / 來源背景
-1 段、80-150 字（從可見的 handle / 平台辨識；找不到就寫平台名與內容類型）。
+（OCR 拼好的完整文字、保留換行與段落）
 
-## 主要論點
-3-5 個 bullet，每個 1-2 句。
-
-## 關鍵概念詞表
-- **概念 A**：1-2 句
-（5-8 個）
-
-## 為什麼值得記
-1-2 句。
-
-## 同主題延伸
-- 3-5 個（可以是書、podcast、其他文章）
+如果發文者完全看不出來就寫 `發文者：（不詳）`，平台也一樣。
+**絕對不要寫摘要、論點、關鍵概念那些東西。**
 
 {caption_block}
-
-只輸出上述內容，不要前言、不要結語、不要 ```markdown``` 包裝。
 """
 
 
@@ -379,10 +363,51 @@ def _extract_title_line(summary: str) -> tuple[str, str]:
     return title, body
 
 
+SCREENSHOT_SYSTEM_PROMPT = """你是一位 OCR 助理。你的工作是看截圖、找發文者、把內文 OCR 出來。
+你不要做摘要、不要評論、不要分析。
+
+寫作原則：
+1. 全部用原文文字保留（截圖是中文就寫中文、英文就寫英文，不翻譯）
+2. 保留發文者原本的段落結構與換行
+3. 順序依截圖 1, 2, 3 ... 拼接
+4. 嚴格遵守 user 給的輸出格式
+"""
+
+
+def _extract_poster_meta(text: str) -> tuple[str, str, str, str]:
+    """從 Gemini 輸出抓 發文者 / 平台 / 標題，回 (poster, platform, title, body)。"""
+    lines = text.split("\n")
+    poster = ""
+    platform = ""
+    title = ""
+    consumed = 0
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s:
+            consumed = i + 1
+            continue
+        m_poster = re.match(r"^發文者[:：]\s*(.+)$", s)
+        m_platform = re.match(r"^平台[:：]\s*(.+)$", s)
+        m_title = re.match(r"^標題[:：]\s*(.+)$", s)
+        if m_poster:
+            poster = m_poster.group(1).strip()
+            consumed = i + 1
+        elif m_platform:
+            platform = m_platform.group(1).strip()
+            consumed = i + 1
+        elif m_title:
+            title = m_title.group(1).strip()
+            consumed = i + 1
+        else:
+            break
+    body = "\n".join(lines[consumed:]).lstrip("\n")
+    return poster, platform, title, body
+
+
 def summarize_screenshots_with_gemini(
     images: list[bytes], caption: str = "",
 ) -> str:
-    """把多張截圖一次餵 Gemini Vision，OCR + 摘要。"""
+    """把多張截圖一次餵 Gemini Vision，純 OCR 不做摘要。"""
     from google.genai import types
 
     client = _get_gemini_client()
@@ -399,9 +424,9 @@ def summarize_screenshots_with_gemini(
     parts.append(types.Part(text=prompt_text))
 
     config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
+        system_instruction=SCREENSHOT_SYSTEM_PROMPT,
         max_output_tokens=4096,
-        thinking_config=types.ThinkingConfig(thinking_budget=2048),
+        thinking_config=types.ThinkingConfig(thinking_budget=1024),
     )
     resp = client.models.generate_content(
         model=GEMINI_MODEL,
@@ -430,14 +455,17 @@ def _upload_image(remote_path: str, content: bytes):
 def save_screenshots_as_article(
     images: list[bytes], caption: str = "",
 ) -> dict:
-    """多張截圖 → Gemini OCR + 摘要 → vault Articles + 9 Attachments。"""
+    """多張截圖 → Gemini OCR（找發文者 + 內文）→ vault Posts + 9 Attachments。"""
     if not images:
         raise RuntimeError("沒有截圖")
 
-    summary = summarize_screenshots_with_gemini(images, caption=caption)
-    title, summary_body = _extract_title_line(summary)
+    raw = summarize_screenshots_with_gemini(images, caption=caption)
+    poster, platform, title, body = _extract_poster_meta(raw)
     if not title:
-        title = f"screenshot-{datetime.now().strftime('%Y%m%d-%H%M')}"
+        first_line = body.strip().split("\n", 1)[0].strip() if body else ""
+        title = first_line[:40] if first_line else (
+            f"post-{datetime.now().strftime('%Y%m%d-%H%M')}"
+        )
     safe_title = _safe_filename(title)
 
     # 上傳每張原圖到 9 Attachments
@@ -449,26 +477,26 @@ def save_screenshots_as_article(
         _upload_image(remote, img)
         image_filenames.append(fname)
 
-    # 重新組 markdown：把圖嵌在最前面，再加摘要
-    author, body_after_author = _extract_author_line(summary_body)
     captured_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
     fm = [
         "---",
-        "type: article",
+        "type: post",
         f"title: {_yaml_str(title)}",
-        f"author: {_yaml_str(author)}",
-        f"source: {_yaml_str('screenshots')}",
+        f"poster: {_yaml_str(poster)}",
+        f"platform: {_yaml_str(platform)}",
         f"captured_at: {_yaml_str(captured_at)}",
         f"image_count: {len(images)}",
-        "tags: [article, capture, screenshot]",
-        "generated_by: gemini-vision",
+        "tags: [post, social, capture]",
+        "generated_by: gemini-vision-ocr",
         "---",
         "",
         f"# {title}",
     ]
-    if author:
-        fm.append(f"*{author}*")
+    if poster:
+        fm.append(f"**發文者**：{poster}")
+    if platform:
+        fm.append(f"**平台**：{platform}")
     fm.append("")
     if caption.strip():
         fm.append(f"> 📌 補充：{caption.strip()}")
@@ -478,13 +506,16 @@ def save_screenshots_as_article(
     for fname in image_filenames:
         fm.append(f"![[9 Attachments/{fname}]]")
     fm.append("")
-    fm.append(body_after_author)
+    fm.append("## 內文")
+    fm.append("")
+    fm.append(body or "(OCR 失敗)")
 
     md = "\n".join(fm)
     remote_path = f"{DROPBOX_VAULT_ARTICLES_PATH}/{safe_title}.md"
     _upload_md(remote_path, md)
     return {
         "title": title,
+        "poster": poster,
         "remote_path": remote_path,
         "image_count": len(images),
     }
