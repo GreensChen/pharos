@@ -82,6 +82,10 @@ def html_escape(s: str) -> str:
 
 _review_state: dict[int, dict] = {}
 _quiz_state: dict[int, dict] = {}
+# Telegram 多張截圖會用 media_group_id 串起來、分多次 update 進來。
+# 累積在這裡、用 1.5s debounce 收齊再一次 process。
+_pending_media_groups: dict[str, dict] = {}
+MEDIA_GROUP_DEBOUNCE_SEC = 1.5
 
 
 async def _push_review_card(chat_id: int, bot):
@@ -561,6 +565,94 @@ async def _save_short_text_as_spark(update: Update, text: str):
     )
 
 
+async def _process_screenshots(
+    chat_id: int, bot, images: list[bytes], caption: str,
+):
+    """收齊截圖後送 Gemini Vision → 摘要 → 寫 vault。"""
+    progress = await bot.send_message(
+        chat_id, f"📸 摘要 {len(images)} 張截圖中..."
+    )
+    try:
+        from article_to_obsidian import save_screenshots_as_article
+        result = await asyncio.to_thread(
+            save_screenshots_as_article, images, caption,
+        )
+    except Exception as e:
+        logger.exception("screenshot summary failed")
+        try:
+            await progress.edit_text(f"❌ 截圖摘要失敗：{e}")
+        except Exception:
+            pass
+        return
+    msg = (
+        f"✅ 已存進 Obsidian\n\n"
+        f"📰 <b>{html_escape(result.get('title', ''))}</b>\n"
+        f"🖼 {result.get('image_count', 0)} 張原圖存 9 Attachments\n"
+        f"📁 <code>{html_escape(result.get('remote_path', ''))}</code>"
+    )
+    try:
+        await progress.edit_text(msg, parse_mode=ParseMode.HTML)
+    except Exception:
+        await bot.send_message(chat_id, msg, parse_mode=ParseMode.HTML)
+
+
+async def _finalize_media_group(group_id: str):
+    await asyncio.sleep(MEDIA_GROUP_DEBOUNCE_SEC)
+    pending = _pending_media_groups.pop(group_id, None)
+    if not pending:
+        return
+    await _process_screenshots(
+        pending["chat_id"], pending["bot"],
+        pending["images"], pending["caption"],
+    )
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """收 Telegram 圖片。單張立刻 process、多張用 media_group_id 聚合。"""
+    if not update.message or not update.message.photo:
+        return
+    chat_id = update.effective_chat.id
+    bot = context.bot
+
+    photo = update.message.photo[-1]  # 取最高解析度
+    try:
+        f = await bot.get_file(photo.file_id)
+        img_bytes = bytes(await f.download_as_bytearray())
+    except Exception as e:
+        logger.exception("download photo failed")
+        await update.message.reply_text(f"❌ 抓圖失敗：{e}")
+        return
+
+    caption = (update.message.caption or "").strip()
+    group_id = update.message.media_group_id
+
+    if not group_id:
+        # 單張：直接 process
+        await _process_screenshots(chat_id, bot, [img_bytes], caption)
+        return
+
+    # 多張：累積 + debounce
+    pending = _pending_media_groups.setdefault(
+        group_id,
+        {
+            "chat_id": chat_id,
+            "bot": bot,
+            "images": [],
+            "captions": [],
+            "task": None,
+        },
+    )
+    pending["images"].append(img_bytes)
+    if caption:
+        pending["captions"].append(caption)
+
+    # cancel 舊 task、起新 timer
+    if pending["task"] and not pending["task"].done():
+        pending["task"].cancel()
+    pending["caption"] = "\n".join(pending["captions"])
+    pending["task"] = asyncio.create_task(_finalize_media_group(group_id))
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """所有非 command 純文字 dispatch。
     優先序：review reaction → YouTube URL → 其他 URL（文章）→ 長文字（文章）→ 短文字（spark）。"""
@@ -674,6 +766,7 @@ def main():
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("endquiz", cmd_endquiz))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     logger.info("✅ obsidian_bot 啟動")
     app.run_polling(drop_pending_updates=False)

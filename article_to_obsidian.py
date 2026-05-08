@@ -32,6 +32,9 @@ DROPBOX_VAULT_ARTICLES_PATH = os.environ.get(
 DROPBOX_VAULT_INBOX_PATH = os.environ.get(
     "DROPBOX_OBSIDIAN_INBOX_PATH", "/Greens Obsidian/0 Inbox"
 )
+DROPBOX_VAULT_ATTACHMENTS_PATH = os.environ.get(
+    "DROPBOX_VAULT_ATTACHMENTS_PATH", "/Greens Obsidian/9 Attachments"
+)
 
 
 SYSTEM_PROMPT = """你是一位資深編輯，專門把網路文章 / 長文摘要進個人知識庫。
@@ -317,6 +320,174 @@ def save_text_as_spark(text: str) -> dict:
     remote_path = f"{DROPBOX_VAULT_INBOX_PATH}/spark-{ts}.md"
     _upload_md(remote_path, md)
     return {"remote_path": remote_path}
+
+
+SCREENSHOT_USER_PROMPT = """這是一篇社群文章的截圖（{n_images} 張）。請：
+
+1. 先 OCR 每張截圖的全部文字
+2. 把多張的內容拼接成一篇完整文章
+3. 對拼接後的內容寫摘要
+
+輸出格式：
+
+**第一行必須是 `標題：xxx`**（標題從文章內容歸納、最多 50 字、不要含特殊字元）。
+**第二行必須是 `作者：name（身份）`**（找不到就寫 `作者：（不詳）`）。
+
+例如：
+標題：Naval 對 AI 時代的價值論
+作者：Naval Ravikant（AngelList 創辦人）
+
+## 一句話摘要
+30-60 字。
+
+## 作者 / 來源背景
+1 段、80-150 字（從可見的 handle / 平台辨識；找不到就寫平台名與內容類型）。
+
+## 主要論點
+3-5 個 bullet，每個 1-2 句。
+
+## 關鍵概念詞表
+- **概念 A**：1-2 句
+（5-8 個）
+
+## 為什麼值得記
+1-2 句。
+
+## 同主題延伸
+- 3-5 個（可以是書、podcast、其他文章）
+
+{caption_block}
+
+只輸出上述內容，不要前言、不要結語、不要 ```markdown``` 包裝。
+"""
+
+
+def _extract_title_line(summary: str) -> tuple[str, str]:
+    """抓第一行 `標題：xxx`，回 (title, body_without_first_line)。"""
+    lines = summary.split("\n")
+    idx = 0
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    if idx >= len(lines):
+        return "", summary
+    first = lines[idx].strip()
+    m = re.match(r"^標題[:：]\s*(.+)$", first)
+    if not m:
+        return "", summary
+    title = m.group(1).strip()
+    body = "\n".join(lines[idx + 1:]).lstrip("\n")
+    return title, body
+
+
+def summarize_screenshots_with_gemini(
+    images: list[bytes], caption: str = "",
+) -> str:
+    """把多張截圖一次餵 Gemini Vision，OCR + 摘要。"""
+    from google.genai import types
+
+    client = _get_gemini_client()
+    parts = [
+        types.Part.from_bytes(data=img, mime_type="image/jpeg")
+        for img in images
+    ]
+    caption_block = (
+        f"使用者貼截圖時附上的補充：\n{caption}" if caption.strip() else ""
+    )
+    prompt_text = SCREENSHOT_USER_PROMPT.format(
+        n_images=len(images), caption_block=caption_block,
+    )
+    parts.append(types.Part(text=prompt_text))
+
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        max_output_tokens=4096,
+        thinking_config=types.ThinkingConfig(thinking_budget=2048),
+    )
+    resp = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=types.Content(parts=parts),
+        config=config,
+    )
+    text = (resp.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini 回傳空")
+    return text
+
+
+def _upload_image(remote_path: str, content: bytes):
+    from dropbox_uploader import _get_client
+    from dropbox.files import WriteMode
+    dbx = _get_client()
+    dbx.files_upload(
+        content,
+        remote_path,
+        mode=WriteMode("overwrite"),
+        autorename=False,
+        mute=True,
+    )
+
+
+def save_screenshots_as_article(
+    images: list[bytes], caption: str = "",
+) -> dict:
+    """多張截圖 → Gemini OCR + 摘要 → vault Articles + 9 Attachments。"""
+    if not images:
+        raise RuntimeError("沒有截圖")
+
+    summary = summarize_screenshots_with_gemini(images, caption=caption)
+    title, summary_body = _extract_title_line(summary)
+    if not title:
+        title = f"screenshot-{datetime.now().strftime('%Y%m%d-%H%M')}"
+    safe_title = _safe_filename(title)
+
+    # 上傳每張原圖到 9 Attachments
+    ts_compact = datetime.now().strftime("%Y%m%d-%H%M%S")
+    image_filenames = []
+    for i, img in enumerate(images, 1):
+        fname = f"{safe_title}_{ts_compact}_{i:02d}.jpg"
+        remote = f"{DROPBOX_VAULT_ATTACHMENTS_PATH}/{fname}"
+        _upload_image(remote, img)
+        image_filenames.append(fname)
+
+    # 重新組 markdown：把圖嵌在最前面，再加摘要
+    author, body_after_author = _extract_author_line(summary_body)
+    captured_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    fm = [
+        "---",
+        "type: article",
+        f"title: {_yaml_str(title)}",
+        f"author: {_yaml_str(author)}",
+        f"source: {_yaml_str('screenshots')}",
+        f"captured_at: {_yaml_str(captured_at)}",
+        f"image_count: {len(images)}",
+        "tags: [article, capture, screenshot]",
+        "generated_by: gemini-vision",
+        "---",
+        "",
+        f"# {title}",
+    ]
+    if author:
+        fm.append(f"*{author}*")
+    fm.append("")
+    if caption.strip():
+        fm.append(f"> 📌 補充：{caption.strip()}")
+        fm.append("")
+    fm.append("## 截圖")
+    fm.append("")
+    for fname in image_filenames:
+        fm.append(f"![[9 Attachments/{fname}]]")
+    fm.append("")
+    fm.append(body_after_author)
+
+    md = "\n".join(fm)
+    remote_path = f"{DROPBOX_VAULT_ARTICLES_PATH}/{safe_title}.md"
+    _upload_md(remote_path, md)
+    return {
+        "title": title,
+        "remote_path": remote_path,
+        "image_count": len(images),
+    }
 
 
 if __name__ == "__main__":
