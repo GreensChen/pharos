@@ -469,10 +469,19 @@ async def _process_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE,
 YOUTUBE_URL_RE = re.compile(
     r"(https?://(?:www\.|m\.)?(?:youtube\.com/(?:watch\?[^\s]*v=|shorts/|live/|embed/)|youtu\.be/)[\w\-]{11}[^\s]*)"
 )
+GENERIC_URL_RE = re.compile(r"(https?://[^\s]+)")
+
+# 分界線：超過此字數的純文字當文章處理（Gemini 摘要）；否則當 spark 直存
+SPARK_TEXT_LENGTH_THRESHOLD = 500
 
 
 def _extract_youtube_url(text: str) -> str | None:
     m = YOUTUBE_URL_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def _extract_any_url(text: str) -> str | None:
+    m = GENERIC_URL_RE.search(text or "")
     return m.group(1) if m else None
 
 
@@ -503,8 +512,58 @@ async def _save_youtube_to_obsidian(update: Update, url: str):
     await progress.edit_text("\n".join(msg_lines), parse_mode=ParseMode.HTML)
 
 
+async def _save_article_url(update: Update, url: str):
+    progress = await update.message.reply_html(
+        f"📰 抓取文章中... <code>{html_escape(url)}</code>"
+    )
+    try:
+        from article_to_obsidian import save_article_from_url
+        result = await asyncio.to_thread(save_article_from_url, url)
+    except Exception as e:
+        logger.exception("article summary failed")
+        await progress.edit_text(f"❌ 文章摘要失敗：{e}")
+        return
+    msg = (
+        f"✅ 已存進 Obsidian\n\n"
+        f"📰 <b>{html_escape(result.get('title', ''))}</b>\n"
+        f"📁 <code>{html_escape(result.get('remote_path', ''))}</code>"
+    )
+    await progress.edit_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def _save_long_text_as_article(update: Update, text: str):
+    progress = await update.message.reply_text("📝 摘要長文中...")
+    try:
+        from article_to_obsidian import save_text_as_article
+        result = await asyncio.to_thread(save_text_as_article, text)
+    except Exception as e:
+        logger.exception("text-as-article summary failed")
+        await progress.edit_text(f"❌ 摘要失敗：{e}")
+        return
+    msg = (
+        f"✅ 已存進 Obsidian（依首行命名）\n\n"
+        f"📝 <b>{html_escape(result.get('title', ''))}</b>\n"
+        f"📁 <code>{html_escape(result.get('remote_path', ''))}</code>"
+    )
+    await progress.edit_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def _save_short_text_as_spark(update: Update, text: str):
+    try:
+        from article_to_obsidian import save_text_as_spark
+        result = await asyncio.to_thread(save_text_as_spark, text)
+    except Exception as e:
+        logger.exception("spark save failed")
+        await update.message.reply_text(f"❌ 存 spark 失敗：{e}")
+        return
+    await update.message.reply_html(
+        f"💡 已存 spark\n📁 <code>{html_escape(result.get('remote_path', ''))}</code>"
+    )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """所有非 command 純文字。優先序：review reaction → YouTube URL → 純文字 spark。"""
+    """所有非 command 純文字 dispatch。
+    優先序：review reaction → YouTube URL → 其他 URL（文章）→ 長文字（文章）→ 短文字（spark）。"""
     if not update.message or not update.message.text:
         return
     chat_id = update.effective_chat.id
@@ -516,18 +575,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _process_reaction(update, context, state, text)
         return
 
-    # Priority 2: YouTube URL → 摘要 + 存 vault
+    # Priority 2: YouTube URL → Gemini 看影片
     yt_url = _extract_youtube_url(text)
     if yt_url:
         await _save_youtube_to_obsidian(update, yt_url)
         return
 
-    # Priority 3: plain text — 未來 spark capture
-    await update.message.reply_html(
-        "💡 收到一段文字，但你現在不在 review 中。\n"
-        "未來這裡會把訊息直接存進 Obsidian Inbox 當靈感，目前先 reply 確認。\n"
-        "想 process Kobo highlights 打 /review。"
-    )
+    # Priority 3: 其他 URL → 抓網頁 + Gemini 摘要
+    other_url = _extract_any_url(text)
+    if other_url:
+        await _save_article_url(update, other_url)
+        return
+
+    # Priority 4: 長文字（複製貼來的全文） → Gemini 摘要當文章
+    if len(text) >= SPARK_TEXT_LENGTH_THRESHOLD:
+        await _save_long_text_as_article(update, text)
+        return
+
+    # Priority 5: 短文字 → spark 原樣存 Inbox
+    await _save_short_text_as_spark(update, text)
 
 
 # ─────────────────────────────────────────────
