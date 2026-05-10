@@ -642,9 +642,10 @@ h1 {
     margin-bottom: 0.3em;
 }
 
-/* 章節標題：在 Kobo 上強制換頁、字級放大 */
+/* 章節標題：在 Kobo 上強制換頁。字級不要太大，與內文層級感由副標
+   （chapter-zh）下沉到內文等高、英文標題用 1.3em 微大即可。*/
 h1.chapter-start {
-    font-size: 1.6em;
+    font-size: 1.3em;
     page-break-before: always;
     break-before: page;
 }
@@ -655,7 +656,8 @@ h1.chapter-start:first-of-type {
 
 h1 .chapter-zh {
     display: block;
-    font-size: smaller;
+    /* 用 rem 直接對齊 root（=body）字級，不會因 h1 放大而被 cascade 拉大 */
+    font-size: 1rem;
     color: #555;
     margin-top: 0.2em;
     font-weight: normal;
