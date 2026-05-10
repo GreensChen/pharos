@@ -632,8 +632,8 @@ nav a {
 }
 
 h1 {
-    /* 預設 h1 給簡介頁用、與對談人 h2 同大。章節標題另外加大。*/
-    font-size: 1.05em;
+    /* 預設 h1 給簡介頁用、與內文同大。章節標題另外加大。*/
+    font-size: 1em;
     font-weight: bold;
     color: #222;
     border-bottom: 2px solid #c0392b;
@@ -729,13 +729,18 @@ h1 .chapter-zh {
 }
 
 .episode-info h2 {
-    /* 簡介頁的「對談人」「簡介」副標題：明確設小一點，避免吃到
-       Kobo 預設 h2 過大字級 */
-    font-size: 1.05em;
+    /* 簡介頁的「對談人」「簡介」副標題：與內文同大，靠粗體 + 顏色區隔 */
+    font-size: 1em;
     font-weight: bold;
     margin-top: 0;
     margin-bottom: 0.5em;
     color: #c0392b;
+}
+
+/* 對談人 / 簡介 區塊內的條目（姓名、角色、簡介內容）字級壓到跟
+   "Stripe · 2026-04-30" 副標一致，視覺上比標題低一階 */
+.episode-info p {
+    font-size: 0.85em;
 }
 
 .source-link {
