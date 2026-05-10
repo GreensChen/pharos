@@ -83,8 +83,20 @@ def patch_css_text(css: str) -> tuple:
     return new_css, changed
 
 
-def patch_kepub(path: Path) -> int:
-    """patch 單一 kepub.epub，回 changed lines (0 表示無需 patch)。"""
+def _load_current_css() -> str:
+    """從 yt2epub.py 抽 EPUB_CSS 常數作為「正確版」CSS。"""
+    src = (Path(__file__).parent / "yt2epub.py").read_text(encoding="utf-8")
+    m = re.search(r'EPUB_CSS\s*=\s*"""(.*?)"""', src, re.DOTALL)
+    if not m:
+        raise RuntimeError("找不到 yt2epub.py 的 EPUB_CSS 常數")
+    return m.group(1)
+
+
+def patch_kepub(path: Path, full_replace: bool = False) -> int:
+    """patch 單一 kepub.epub，回 changed lines (0 表示無需 patch)。
+
+    full_replace=True：直接用 yt2epub.py 的 EPUB_CSS 整個覆蓋。
+    """
     tmp = Path(tempfile.mkdtemp(prefix="kepub_patch_"))
     try:
         # 解壓
@@ -94,6 +106,7 @@ def patch_kepub(path: Path) -> int:
         # 找所有 CSS、找到我們生成的特徵（.segment 或 body 字型 family Noto）
         css_files = list(tmp.rglob("*.css"))
         total_changed = 0
+        new_css = _load_current_css() if full_replace else None
         for css_file in css_files:
             try:
                 text = css_file.read_text(encoding="utf-8")
@@ -101,10 +114,16 @@ def patch_kepub(path: Path) -> int:
                 continue
             if ".segment" not in text and "Noto Serif CJK" not in text:
                 continue  # 不是 Pharos 生成的 CSS
-            new_text, changed = patch_css_text(text)
-            if changed > 0:
-                css_file.write_text(new_text, encoding="utf-8")
-                total_changed += changed
+            if full_replace:
+                if text.strip() == new_css.strip():
+                    continue  # 已是最新版
+                css_file.write_text(new_css, encoding="utf-8")
+                total_changed += 1
+            else:
+                new_text, changed = patch_css_text(text)
+                if changed > 0:
+                    css_file.write_text(new_text, encoding="utf-8")
+                    total_changed += changed
 
         if total_changed == 0:
             return 0
@@ -133,6 +152,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--full", action="store_true",
+                    help="整個 main.css 用 yt2epub.py 最新版本覆蓋")
     args = ap.parse_args()
 
     kobo_dir = find_kobo_dir()
@@ -183,7 +204,7 @@ def main():
     fail = 0
     for i, p in enumerate(files, 1):
         try:
-            changed = patch_kepub(p)
+            changed = patch_kepub(p, full_replace=args.full)
             if changed > 0:
                 ok += 1
                 print(f"[{i:3}/{len(files)}] ✅ {p.name}  (-{changed} font-size)")

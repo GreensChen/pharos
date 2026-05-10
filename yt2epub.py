@@ -600,10 +600,10 @@ def detect_chapters(segments: list[dict]) -> list[dict]:
 EPUB_CSS = """
 body {
     font-family: "Noto Serif CJK TC", "Source Han Serif TC", "Georgia", serif;
-    /* 不指定 font-size：跟商業電子書一樣完全交給 Kobo 字級 slider 控制 */
+    /* 不指定 font-size 與 padding：跟商業電子書一樣，完全交給 Kobo 的字級
+       與「邊界」slider 控制，避免內文離邊太遠。*/
     line-height: 1.2;
     color: #1a1a1a;
-    padding: 1.3em;
 }
 
 a {
@@ -632,7 +632,8 @@ nav a {
 }
 
 h1 {
-    font-size: 1.6em;  /* Kobo h1 預設約 2em，× 0.8 */
+    /* 預設 h1 給簡介頁用、相對小一點。章節標題另外加大。*/
+    font-size: 1.2em;
     font-weight: bold;
     color: #222;
     border-bottom: 2px solid #c0392b;
@@ -641,8 +642,9 @@ h1 {
     margin-bottom: 0.3em;
 }
 
-/* 章節標題：在 Kobo 上強制換頁，視覺上仍像獨立章節 */
+/* 章節標題：在 Kobo 上強制換頁、字級放大 */
 h1.chapter-start {
+    font-size: 1.6em;
     page-break-before: always;
     break-before: page;
 }
@@ -695,7 +697,7 @@ h1 .chapter-zh {
 }
 
 .cover-title {
-    font-size: 1.4em;
+    font-size: 1.3em;
     font-weight: bold;
     text-align: center;
     margin-top: 2em;
@@ -725,7 +727,9 @@ h1 .chapter-zh {
 }
 
 .episode-info h2 {
-    /* 不指定 font-size：讓 Kobo 用預設 h2 大小，副標題才有層級感 */
+    /* 簡介頁的「對談人」「簡介」副標題：明確設小一點，避免吃到
+       Kobo 預設 h2 過大字級 */
+    font-size: 1.05em;
     font-weight: bold;
     margin-top: 0;
     margin-bottom: 0.5em;
