@@ -600,7 +600,7 @@ def detect_chapters(segments: list[dict]) -> list[dict]:
 EPUB_CSS = """
 body {
     font-family: "Noto Serif CJK TC", "Source Han Serif TC", "Georgia", serif;
-    /* 不指定 font-size：簡介頁、目錄、章節標題用 Kobo 預設 */
+    /* 不指定 font-size：跟商業電子書一樣完全交給 Kobo 字級 slider 控制 */
     line-height: 1.2;
     color: #1a1a1a;
     padding: 1.3em;
@@ -689,8 +689,8 @@ h1 .chapter-zh {
 }
 
 .segment {
-    /* 章節內文（說話人 + 時間戳 + 翻譯）整塊 × 1.4，標題與簡介頁不受影響 */
-    font-size: 1.4em;
+    /* 不指定 font-size：跟商業電子書一樣交給 Kobo 字級 slider 控制，
+       使用者調整字級時，逐字稿才會跟著縮放、不會永遠超大。*/
     margin-bottom: 1em;
 }
 
