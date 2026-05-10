@@ -103,7 +103,7 @@ def patch_kepub(path: Path, full_replace: bool = False) -> int:
         with zipfile.ZipFile(path, "r") as z:
             z.extractall(tmp)
 
-        # 簡介頁 body 加 class="info-page"（讓新版 CSS 能等比縮小簡介頁）
+        # 簡介頁：補 class="info-page" + 清掉 role span 的 inline font-size
         for xhtml in tmp.rglob("*.xhtml"):
             try:
                 t = xhtml.read_text(encoding="utf-8")
@@ -111,9 +111,11 @@ def patch_kepub(path: Path, full_replace: bool = False) -> int:
                 continue
             if "<title>簡介</title>" not in t:
                 continue
-            if 'class="info-page"' in t:
-                continue
-            new_t = t.replace("<body>", '<body class="info-page">', 1)
+            new_t = t
+            if 'class="info-page"' not in new_t:
+                new_t = new_t.replace("<body>", '<body class="info-page">', 1)
+            # 清掉 "color:#777;font-size:0.9em" → "color:#777"
+            new_t = re.sub(r'color:#777;\s*font-size:\s*0\.9em', "color:#777", new_t)
             if new_t != t:
                 xhtml.write_text(new_t, encoding="utf-8")
 

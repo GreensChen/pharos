@@ -632,8 +632,8 @@ nav a {
 }
 
 h1 {
-    /* 預設 h1 給簡介頁用、相對小一點。章節標題另外加大。*/
-    font-size: 1.2em;
+    /* 預設 h1 給簡介頁用、與對談人 h2 同大。章節標題另外加大。*/
+    font-size: 1.05em;
     font-weight: bold;
     color: #222;
     border-bottom: 2px solid #c0392b;
@@ -745,9 +745,13 @@ h1 .chapter-zh {
     color: #999;
 }
 
-/* 簡介頁整頁等比縮小一階：標題、對談人、姓名等都跟著小 */
-body.info-page {
-    font-size: 0.88em;
+/* 簡介頁字級規則：
+   - "簡介" h1 與 "對談人" h2 同高（h1 1.05em / h2 1.05em，預設值已設）
+   - "Stripe · 2026-04-30" 副標：比內文再小一階
+   - 對談人姓名 + 角色標籤：內文同大（不另外縮小）
+*/
+body.info-page h1 .chapter-zh {
+    font-size: 0.85em;
 }
 """
 
@@ -953,7 +957,8 @@ def build_epub(segments, chapters, meta, output_path, render_timestamps: bool = 
             role = p.get("role", "")
             label = f"{icon} <strong>{name}</strong>"
             if role:
-                label += f" <span style=\"color:#777;font-size:0.9em\">— {role}</span>"
+                # role 字級跟內文等高（user 偏好），靠顏色區隔即可
+                label += f" <span style=\"color:#777\">— {role}</span>"
             items.append(f"<p>{label}</p>")
         participants_block = (
             f'<div class="episode-info"><h2>對談人</h2>{"".join(items)}</div>'
