@@ -744,6 +744,11 @@ h1 .chapter-zh {
     font-size: smaller;
     color: #999;
 }
+
+/* 簡介頁整頁等比縮小一階：標題、對談人、姓名等都跟著小 */
+body.info-page {
+    font-size: 0.88em;
+}
 """
 
 SPEAKER_CLASSES = [
@@ -979,7 +984,7 @@ def build_epub(segments, chapters, meta, output_path, render_timestamps: bool = 
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-TW">
 <head><title>簡介</title>
 <link rel="stylesheet" type="text/css" href="style/main.css"/></head>
-<body>
+<body class="info-page">
     <h1>簡介<span class="chapter-zh">{meta.get('podcast_name', '')} · {meta.get('date', '')}</span></h1>
     {info_inner}
 </body>

@@ -103,6 +103,20 @@ def patch_kepub(path: Path, full_replace: bool = False) -> int:
         with zipfile.ZipFile(path, "r") as z:
             z.extractall(tmp)
 
+        # 簡介頁 body 加 class="info-page"（讓新版 CSS 能等比縮小簡介頁）
+        for xhtml in tmp.rglob("*.xhtml"):
+            try:
+                t = xhtml.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if "<title>簡介</title>" not in t:
+                continue
+            if 'class="info-page"' in t:
+                continue
+            new_t = t.replace("<body>", '<body class="info-page">', 1)
+            if new_t != t:
+                xhtml.write_text(new_t, encoding="utf-8")
+
         # 找所有 CSS、找到我們生成的特徵（.segment 或 body 字型 family Noto）
         css_files = list(tmp.rglob("*.css"))
         total_changed = 0
