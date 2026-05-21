@@ -768,7 +768,10 @@ SPEAKER_ICONS = ["🔴", "🔵", "🟢", "🟣"]
 
 
 def generate_text_cover(title: str, subtitle: str = "") -> bytes:
-    """畫乾淨的純文字書封：白底、深灰標題置中、細分隔線、副標題。"""
+    """畫乾淨的純文字書封：白底、深灰標題置中、副標題。
+
+    ⚠️ 此函式 Pharos / Anamnesis 兩邊必須 byte-for-byte 一致。
+    """
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
@@ -807,7 +810,7 @@ def generate_text_cover(title: str, subtitle: str = "") -> bytes:
         title_font = ImageFont.load_default()
         sub_font = ImageFont.load_default()
 
-    # 標題自動換行（依字元寬度）
+    # 標題自動換行：英文/混合語言依字元寬度斷詞；純中文段落每行 20 字
     def wrap(text, font, max_w):
         words = text.split()
         lines, cur = [], ""
@@ -823,7 +826,12 @@ def generate_text_cover(title: str, subtitle: str = "") -> bytes:
             lines.append(cur)
         return lines
 
-    title_lines = wrap(title, title_font, W - 140)
+    if any('一' <= c <= '鿿' for c in title):
+        per_line = 20
+        title_lines = [title[i:i + per_line] for i in range(0, len(title), per_line)]
+    else:
+        title_lines = wrap(title, title_font, W - 140)
+
     line_h = 90
     total_h = len(title_lines) * line_h
 
