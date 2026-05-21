@@ -1016,11 +1016,11 @@ def build_epub(segments, chapters, meta, output_path, render_timestamps: bool = 
         book.add_item(info_page)
         front_pages.append(info_page)
 
-    # 全書章節合併到單一 XHTML 檔。
-    # 為什麼：Kobo 的「拖到角落跨頁畫重點」手勢只能在同一個 XHTML 內延伸，
-    # 跨 spine item 會中斷；多個 spine item 也讓開檔分頁計算變慢。
-    # 章節導航改用同檔內的 #ch-N 錨點，視覺上仍以 page-break 強制換頁。
-    chapters_body = ""
+    # 每章寫成獨立的 xhtml 檔。Kobo 在 spine 上的檔案邊界會自動斷頁，
+    # 比 CSS page-break-before 可靠（先前單檔 + inline page-break style 的版本
+    # 在某些 Kobo 機型 / 字級組合下會失效，造成章節接在一起）。
+    # tradeoff：跨章節的拖曳畫重點手勢會在章邊界中斷。
+    chapter_pages = []
     toc = []
 
     for ch_idx, ch in enumerate(chapters, 1):
@@ -1053,41 +1053,41 @@ def build_epub(segments, chapters, meta, output_path, render_timestamps: bool = 
         {inner}
     </div>"""
 
-        # 第 2 章起強制換頁（inline style 比 class CSS 在 Kobo 上更可靠）
-        break_style = "" if ch_idx == 1 else ' style="page-break-before: always; break-before: page;"'
-        chapters_body += f"""
-    <h1 id="ch-{ch_idx}" class="chapter-start"{break_style}>Ch.{ch_idx} — {ch['title_en']}
-        <span class="chapter-zh">{ch['title_zh']}</span>
-    </h1>
-    {segments_html}"""
-
-        toc.append(
-            epub.Link(f"chapters.xhtml#ch-{ch_idx}", f"Ch.{ch_idx} {ch['title_zh']}", f"ch_{ch_idx:02d}")
-        )
-
-    chapters_html = f"""<?xml version='1.0' encoding='utf-8'?>
+        ch_filename = f"chapter_{ch_idx}.xhtml"
+        ch_html = f"""<?xml version='1.0' encoding='utf-8'?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-TW">
-<head><title>章節</title>
+<head><title>Ch.{ch_idx} {ch['title_zh']}</title>
 <link rel="stylesheet" type="text/css" href="style/main.css"/></head>
-<body>{chapters_body}
+<body>
+    <h1 class="chapter-start">Ch.{ch_idx} — {ch['title_en']}
+        <span class="chapter-zh">{ch['title_zh']}</span>
+    </h1>
+    {segments_html}
 </body>
 </html>"""
 
-    chapters_page = epub.EpubHtml(
-        title="章節", file_name="chapters.xhtml", lang="zh-TW",
-    )
-    chapters_page.content = chapters_html.encode("utf-8")
-    chapters_page.add_item(css)
-    book.add_item(chapters_page)
+        ch_page = epub.EpubHtml(
+            title=f"Ch.{ch_idx} {ch['title_zh']}",
+            file_name=ch_filename,
+            lang="zh-TW",
+        )
+        ch_page.content = ch_html.encode("utf-8")
+        ch_page.add_item(css)
+        book.add_item(ch_page)
+        chapter_pages.append(ch_page)
+
+        toc.append(
+            epub.Link(ch_filename, f"Ch.{ch_idx} {ch['title_zh']}", f"ch_{ch_idx:02d}")
+        )
 
     book.toc = toc
     book.add_item(epub.EpubNcx())
     nav_item = epub.EpubNav()
     nav_item.add_item(css)
     book.add_item(nav_item)
-    # 順序：封面頁 → (簡介頁) → 章節合併檔；nav 標記 linear="no" 讓 Kobo 翻頁時跳過
-    book.spine = front_pages + [(nav_item, "no")] + [chapters_page]
+    # 順序：封面頁 → (簡介頁) → nav(linear="no") → 各章節
+    book.spine = front_pages + [(nav_item, "no")] + chapter_pages
 
     epub.write_epub(output_path, book, {})
 
