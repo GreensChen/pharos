@@ -14,6 +14,12 @@
     <key>WorkingDirectory</key>
     <string>/Users/YOUR_USERNAME/yt2epub</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/YOUR_USERNAME/anamnesis</string>
+    </dict>
+
     <key>RunAtLoad</key>
     <true/>
 

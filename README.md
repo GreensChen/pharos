@@ -7,6 +7,10 @@
 姊妹專案：[Anamnesis](https://github.com/GreensChen/anamnesis) — 把 Kobo 重點 / 截圖 / 文章
 / 影片摘要彙整到 Obsidian，並提供 vault-aware Q&A。
 
+Pharos 跟 Anamnesis 部署在同一台 server 時，**user 按「🎧 轉成 epub」轉檔的訊號會自動回寫到 Anamnesis 的興趣模型**，讓 Anamnesis 的 Weekly Paper 系統知道你最近真的在看哪些主題的影片，進而調整推薦給你的 paper。
+
+跨 repo 整合是 opt-in 的——Anamnesis 沒部署也不影響 Pharos 運作。
+
 ## 用途
 
 如果你有以下習慣：

@@ -22,7 +22,16 @@ echo "→ 收緊 .env 權限..."
 chmod 600 "$PROJECT_DIR/.env"
 chown yt2epub:yt2epub "$PROJECT_DIR/.env"
 
-# 3. 複製 systemd unit 檔
+# 3. 如果 Anamnesis 部署在同台 server，確認 PYTHONPATH 指向正確
+#    (pharos-bot.service 已設 PYTHONPATH=/home/yt2epub/anamnesis)
+ANAMNESIS_DIR="/home/yt2epub/anamnesis"
+if [ -d "$ANAMNESIS_DIR" ] && [ -f "$ANAMNESIS_DIR/interest_model.py" ]; then
+    echo "→ 偵測到 Anamnesis ($ANAMNESIS_DIR)，interest signal 整合已啟用"
+else
+    echo "→ 未偵測到 Anamnesis ($ANAMNESIS_DIR)，interest signal 將 silent skip（不影響 Pharos 主功能）"
+fi
+
+# 4. 複製 systemd unit 檔
 echo ""
 echo "→ 安裝 systemd unit..."
 cp "$PROJECT_DIR/server/pharos-bot.service"    /etc/systemd/system/
@@ -30,13 +39,13 @@ cp "$PROJECT_DIR/server/pharos-brief.service"  /etc/systemd/system/
 cp "$PROJECT_DIR/server/pharos-brief.timer"    /etc/systemd/system/
 systemctl daemon-reload
 
-# 4. 啟用 + 啟動
+# 5. 啟用 + 啟動
 echo ""
 echo "→ 啟用 + 啟動服務..."
 systemctl enable --now pharos-bot.service
 systemctl enable --now pharos-brief.timer
 
-# 5. 顯示狀態
+# 6. 顯示狀態
 echo ""
 echo "=========================================="
 echo "✅ 安裝完成"

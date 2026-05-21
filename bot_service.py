@@ -64,6 +64,29 @@ logging.basicConfig(
 logger = logging.getLogger("bot_service")
 
 
+def _send_interest_signal(video_title: str, video_tags: list[str]) -> None:
+    """把這次轉檔的訊號送進 Anamnesis 的興趣模型。
+
+    失敗不影響轉檔主流程——Anamnesis 沒部署 / interest_model 不存在 /
+    任何例外都 silent skip。
+    """
+    try:
+        from interest_model import record_pharos_signal
+    except ImportError:
+        logger.debug("Anamnesis interest_model not available, skipping signal")
+        return
+
+    try:
+        record_pharos_signal(
+            video_title=video_title,
+            video_tags=video_tags or [],
+            converted_at=datetime.now().isoformat(),
+        )
+        logger.info(f"sent interest signal: {len(video_tags or [])} tags for '{video_title[:40]}'")
+    except Exception as e:
+        logger.warning(f"send interest signal failed (non-fatal): {e}")
+
+
 def html_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -273,6 +296,11 @@ async def cb_convert(query, video_id: str):
         ]]))
         await query.message.reply_html(
             f"✅ <b>{safe_title}</b>\n轉檔完成，已同步到 Dropbox/Kobo。"
+        )
+        # 送興趣訊號給 Anamnesis（失敗 silent skip，不影響主流程）
+        _send_interest_signal(
+            video_title=title,
+            video_tags=data.get("summary", {}).get("tags") or [],
         )
     else:
         # 失敗 → 還原按鈕讓使用者重試

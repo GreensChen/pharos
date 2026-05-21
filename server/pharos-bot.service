@@ -11,6 +11,7 @@ ExecStart=/usr/bin/python3 -u /home/yt2epub/pharos/bot_service.py
 Restart=on-failure
 RestartSec=30
 Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/home/yt2epub/anamnesis"
 StandardOutput=append:/home/yt2epub/pharos/bot_service.stdout.log
 StandardError=append:/home/yt2epub/pharos/bot_service.stderr.log
 
