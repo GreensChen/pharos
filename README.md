@@ -71,11 +71,14 @@ Acquired 的 Ben & David 訪 Jensen 三小時，從 NVIDIA 早期作為
                                       ▼
                               Dropbox API 上傳
                                       │
-                                      ▼
-                              ☁️ Dropbox 雲端
-                                      │
-                                      ▼
-                                 Kobo 同步下載
+                          ┌───────────┴───────────┐
+                          │                       │
+                          ▼                       ▼
+                    ☁️ Dropbox 雲端       Anamnesis 興趣模型
+                          │              （record_pharos_signal）
+                          ▼                       │
+                     Kobo 同步下載                 ▼
+                                        Weekly Paper 推薦加權
 ```
 
 ## 功能
@@ -85,6 +88,7 @@ Acquired 的 Ben & David 訪 Jensen 三小時，從 NVIDIA 早期作為
 - ✅ **自動過濾**：沒字幕、低相關性的影片不推
 - ✅ **Gemini / Claude 雙引擎**（環境變數切換）
 - ✅ **Telegram 全功能管理**：訂閱清單、即時摘要、轉檔、查紀錄
+- ✅ **Anamnesis 興趣訊號整合**：轉檔行為自動回饋到 Weekly Paper 推薦系統
 - ✅ **直接傳 YouTube URL 給 bot 立刻摘要**
 - ✅ **epub 自動章節分段 + 對談人辨識**
 - ✅ **Pillow 自製文字書封**（無 YouTube 縮圖版權問題）
